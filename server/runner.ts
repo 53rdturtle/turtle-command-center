@@ -15,6 +15,8 @@ export interface RunRequest {
   systemPrompt: string;
   /** Long-lived token from `claude setup-token`, selecting the account to bill; null uses the CLI's own login. */
   oauthToken: string | null;
+  /** Added to the agent's environment, so commands it runs see them too. */
+  env: Record<string, string>;
 }
 
 /** Everything needed to find a run again after the server restarts. Stored as JSON on the task. */
@@ -140,7 +142,7 @@ export class CliRunner implements AgentRunner {
       ...(req.resume ? ['--resume', req.sessionId] : ['--session-id', req.sessionId]),
     ];
 
-    const env: NodeJS.ProcessEnv = { ...process.env, MCP_TOOL_TIMEOUT: String(24 * 60 * 60 * 1000) };
+    const env: NodeJS.ProcessEnv = { ...process.env, ...req.env, MCP_TOOL_TIMEOUT: String(24 * 60 * 60 * 1000) };
     // An API key in the environment would bill the key instead of the subscription login.
     delete env.ANTHROPIC_API_KEY;
     if (req.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = req.oauthToken;

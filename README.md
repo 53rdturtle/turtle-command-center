@@ -70,6 +70,10 @@ only share the SQLite database and log files.
   `npm install && npm run dev`), or just a shell when there is none. The terminal gets free ports in `TCC_PORT` and
   `TCC_DEV_PORT` and a sandbox `TCC_DATA_DIR` (`~/.turtle-cc/try/<task>`), so when the project is this app, the copy
   under test runs beside your board with its own empty database instead of picking up your tasks.
+- **Agents test their own copy** too. Each agent run gets free `TCC_PORT` / `TCC_DEV_PORT` and its own sandbox
+  `TCC_DATA_DIR` (`~/.turtle-cc/try/<task>-agent`, separate from the Try it one). The system prompt tells the agent to
+  start the project with its Try command, stop what it started, and check pages with a headless Chrome screenshot
+  (Edge when Chrome isn't installed). The browser uses a throwaway profile, so it never touches yours.
 - **Mark done** commits leftover changes and removes the worktree but keeps the `tcc/...` branch.
   **Discard** deletes the worktree and the branch.
 - **Accounts** (header button): agents run on the first account with usage left. When it hits its usage limit, its tasks
