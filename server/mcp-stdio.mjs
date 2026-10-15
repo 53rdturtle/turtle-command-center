@@ -43,7 +43,10 @@ const TOOLS = [
             required: ['label'],
           },
         },
-        done: { type: 'boolean', description: 'True when the task is complete and nothing more is needed.' },
+        done: {
+          type: 'boolean',
+          description: 'True when the task is complete and nothing more is needed. The board then offers its own merge and mark-done buttons, so leave those out of options.',
+        },
       },
       required: ['summary', 'options'],
     },
