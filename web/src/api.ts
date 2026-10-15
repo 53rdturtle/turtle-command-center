@@ -20,6 +20,8 @@ export interface Task {
   description: string;
   status: Status;
   model: string;
+  /** Account of the current or last run; null when there is only one account. */
+  account: string | null;
   sessionId: string | null;
   worktree: string | null;
   branch: string | null;
@@ -46,6 +48,15 @@ export interface Project {
   permissionMode: string;
   alwaysAllow: string[];
   currentBranch: string | null;
+}
+
+export interface Account {
+  id: number;
+  name: string;
+  /** False for the account the `claude` CLI is logged in to. */
+  usesToken: boolean;
+  limitedUntil: number | null;
+  running: number;
 }
 
 export type MergeResult =
@@ -86,6 +97,10 @@ export const api = {
   addProject: (p: { name: string; path: string; defaultModel: string; permissionMode: string }) =>
     call<Project>('POST', '/api/projects', p),
   updateProject: (slug: string, p: Partial<Project>) => call<Project>('PATCH', `/api/projects/${slug}`, p),
+  accounts: () => call<Account[]>('GET', '/api/accounts'),
+  addAccount: (a: { name: string; token: string }) => call<Account[]>('POST', '/api/accounts', a),
+  removeAccount: (id: number) => call<Account[]>('DELETE', `/api/accounts/${id}`),
+  clearAccountLimit: (id: number) => call<Account[]>('POST', `/api/accounts/${id}/clear-limit`),
   tasks: (slug: string) => call<Task[]>('GET', `/api/projects/${slug}/tasks`),
   createTask: (slug: string, t: { title: string; description: string; model: string }) =>
     call<Task>('POST', `/api/projects/${slug}/tasks`, t),

@@ -95,6 +95,7 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
       <div className="meta">
         {parent && <span className="chip">↳ from #{parent.id} {parent.title}</span>}
         <span className="chip">{task.model}</span>
+        {task.account && <span className="chip" title="Account this task last ran on">{task.account}</span>}
         {task.branch && <span className="chip mono">{task.branch}</span>}
         {diff.data && diff.data.files.length > 0 && (
           <button className="chip chip-button mono" onClick={() => setShowChanges(true)} title={`Changes relative to ${diff.data.target}`}>
@@ -183,7 +184,7 @@ function Body({ task, children }: { task: Task; children: Task[] }) {
     case 'limited':
       return (
         <p className="muted">
-          Hit a usage limit. Retrying automatically at {task.retryAt ? new Date(task.retryAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'soon'}.
+          {task.account ? 'Every account hit its usage limit.' : 'Hit a usage limit.'} Retrying automatically at {task.retryAt ? new Date(task.retryAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'soon'}.
         </p>
       );
     case 'failed':

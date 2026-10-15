@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { LIMIT_RETRY_MS, MAX_CONCURRENT } from './config.ts';
 import {
-  addEvent, db, DB_PATH, getPermission, getProject, getTask, lastEvent, pendingPermissions,
+  addEvent, db, DB_PATH, getAccount, getPermission, getProject, getTask, lastEvent, listAccounts, pendingPermissions,
   setRunOffset, tasksWithStatus, updateTask,
-  type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
+  type AccountRow, type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { openResumeTerminal } from './openTerminal.ts';
@@ -112,6 +112,8 @@ export function toDto(t: TaskRow) {
     description: t.description,
     status: t.status,
     model: t.model,
+    // Only worth showing once there is more than one account to fail over between.
+    account: t.account_id && listAccounts().length > 1 ? (getAccount(t.account_id)?.name ?? null) : null,
     sessionId: t.started ? t.session_id : null,
     worktree: t.worktree,
     branch: t.branch,
@@ -161,6 +163,51 @@ function initialPrompt(task: TaskRow) {
   return prompt;
 }
 
+// ---------- accounts ----------
+
+/** The first account, in failover order, that isn't cooling down from a usage limit. */
+function availableAccount(): AccountRow | undefined {
+  const now = Date.now();
+  return listAccounts().find((a) => !a.limited_until || a.limited_until <= now);
+}
+
+/** When the next limited account frees up. */
+const nextAccountReset = () => Math.min(...listAccounts().map((a) => a.limited_until ?? Date.now()));
+
+/** Usage-limit messages from the API sometimes end in the reset time as `|<unix seconds>`. */
+function limitResetAt(message: string) {
+  const epoch = Number(message.match(/\|(\d{10})\b/)?.[1]);
+  return epoch * 1000 > Date.now() ? epoch * 1000 : Date.now() + LIMIT_RETRY_MS;
+}
+
+export function accountsDto() {
+  const now = Date.now();
+  return listAccounts().map((a) => ({
+    id: a.id,
+    name: a.name,
+    usesToken: Boolean(a.token),
+    limitedUntil: a.limited_until && a.limited_until > now ? a.limited_until : null,
+    running: (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'running' AND account_id = ?`).get(a.id) as { n: number }).n,
+  }));
+}
+
+export function addAccount(name: string, token: string) {
+  db.prepare('INSERT INTO accounts (name, token, created_at) VALUES (?, ?, ?)').run(name, token, Date.now());
+  pump(); // tasks parked for lack of an account can go now
+}
+
+export function removeAccount(id: number) {
+  if (listAccounts().length <= 1) throw new Error('Keep at least one account');
+  db.prepare('DELETE FROM accounts WHERE id = ?').run(id); // its running tasks finish on the token they started with
+}
+
+/** For when you know the limit has reset (or was a false alarm). */
+export function clearAccountLimit(id: number) {
+  db.prepare('UPDATE accounts SET limited_until = NULL WHERE id = ?').run(id);
+  for (const t of tasksWithStatus('limited')) updateTask(t.id, { status: 'queued', retry_at: null });
+  pump();
+}
+
 // ---------- scheduler ----------
 
 const runningCount = () => (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'running'`).get() as { n: number }).n;
@@ -178,15 +225,22 @@ function pump() {
   while (runningCount() < MAX_CONCURRENT) {
     const next = tasksWithStatus('queued')[0];
     if (!next) return;
-    updateTask(next.id, { status: 'running', checkpoint: null, split: null, error: null });
-    start(next).catch((err) => {
+    const account = availableAccount();
+    if (!account) {
+      // Every account is out of usage: park the queue until the first one resets.
+      const retryAt = nextAccountReset();
+      for (const t of tasksWithStatus('queued')) updateTask(t.id, { status: 'limited', retry_at: retryAt });
+      return;
+    }
+    updateTask(next.id, { status: 'running', checkpoint: null, split: null, error: null, account_id: account.id });
+    start(next, account).catch((err) => {
       updateTask(next.id, { status: 'failed', error: String(err?.message ?? err), run_ref: null });
       pump();
     });
   }
 }
 
-async function start(task: TaskRow) {
+async function start(task: TaskRow, account: AccountRow) {
   const project = getProject(task.project_id)!;
   if (!task.worktree) {
     const parent = task.parent_id ? getTask(task.parent_id) : undefined;
@@ -212,6 +266,7 @@ async function start(task: TaskRow) {
     permissionMode: project.permission_mode,
     dbPath: DB_PATH,
     systemPrompt: systemPrompt(fresh),
+    oauthToken: account.token,
   });
   updateTask(task.id, { session_id: sessionId, pending_prompt: null, run_prompt: prompt, run_ref: JSON.stringify(ref), run_offset: 0 });
   addEvent(task.id, 'user', prompt);
@@ -252,13 +307,17 @@ function finish(taskId: number, result: RunResult) {
     // Stopped by the user; stop() already set the final status.
     updateTask(taskId, base);
   } else if (result.usageLimited) {
-    updateTask(taskId, {
-      ...base,
-      status: 'limited',
-      retry_at: Date.now() + LIMIT_RETRY_MS,
-      pending_prompt: task.started ? 'You were interrupted by a usage limit. Continue where you left off.' : task.run_prompt,
-      error: result.resultText,
-    });
+    const limited = task.account_id ? getAccount(task.account_id) : undefined;
+    if (limited) db.prepare('UPDATE accounts SET limited_until = ? WHERE id = ?').run(limitResetAt(result.resultText), limited.id);
+    const pending_prompt = task.started ? 'You were interrupted by a usage limit. Continue where you left off.' : task.run_prompt;
+    const fallback = availableAccount();
+    if (fallback) {
+      // Sessions are stored locally, not per account, so the next account resumes the same session.
+      updateTask(taskId, { ...base, status: 'queued', retry_at: null, pending_prompt, error: null });
+      addEvent(taskId, 'user', `${limited?.name ?? 'The account'} hit its usage limit; continuing on ${fallback.name}.`);
+    } else {
+      updateTask(taskId, { ...base, status: 'limited', retry_at: nextAccountReset(), pending_prompt, error: result.resultText });
+    }
   } else if (result.isError) {
     updateTask(taskId, { ...base, status: 'failed', error: result.resultText });
   } else if (task.split) {
@@ -437,7 +496,8 @@ Then call report_checkpoint with done=true and a one-line summary of how you res
 /** Called when a conflict-resolving run ends: merge if the agent says it's resolved, otherwise leave it to the user. */
 function continueMerge(taskId: number) {
   const task = getTask(taskId)!;
-  if (task.merge_state !== 'resolving' || task.status === 'limited') return; // a usage-limited run resumes later
+  // A usage-limited run resumes later, on this account or the next.
+  if (task.merge_state !== 'resolving' || task.status === 'limited' || task.status === 'queued') return;
   const cp = task.checkpoint ? (JSON.parse(task.checkpoint) as Checkpoint) : null;
   if (task.status !== 'needs_input' || !cp?.done) {
     updateTask(taskId, { merge_state: null });
