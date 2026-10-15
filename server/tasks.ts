@@ -6,7 +6,7 @@ import {
   listEvents, pendingPermissions, saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
   type AccountRow, type Checkpoint, type EventRow, type MergeFailure, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
-import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
+import { CliRunner, type AccountUsage, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { openResumeTerminal } from './openTerminal.ts';
 import {
   createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff,
@@ -184,13 +184,26 @@ function limitResetAt(message: string) {
   return epoch * 1000 > Date.now() ? epoch * 1000 : Date.now() + LIMIT_RETRY_MS;
 }
 
+/** A window that has reset since it was reported is back to zero. */
+function usageDto(a: AccountRow) {
+  if (!a.usage) return null;
+  const now = Date.now();
+  const usage = JSON.parse(a.usage) as AccountUsage;
+  const window = (w?: { utilization: number; resetsAt: number }) =>
+    w && (w.resetsAt > now ? w : { utilization: 0, resetsAt: null });
+  return { fiveHour: window(usage.fiveHour) ?? null, sevenDay: window(usage.sevenDay) ?? null, reportedAt: a.usage_at };
+}
+
 export function accountsDto() {
   const now = Date.now();
+  const active = availableAccount()?.id;
   return listAccounts().map((a) => ({
     id: a.id,
     name: a.name,
     usesToken: Boolean(a.token),
+    active: a.id === active,
     limitedUntil: a.limited_until && a.limited_until > now ? a.limited_until : null,
+    usage: usageDto(a),
     running: (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'running' AND account_id = ?`).get(a.id) as { n: number }).n,
   }));
 }
@@ -294,7 +307,10 @@ function attach(taskId: number) {
     onEvent: (e) => {
       if (e.kind === 'session') updateTask(taskId, { session_id: e.sessionId, started: 1 });
       else if (e.kind === 'context') updateTask(taskId, { context_tokens: e.tokens });
-      else {
+      else if (e.kind === 'usage') {
+        const accountId = getTask(taskId)?.account_id;
+        if (accountId) db.prepare('UPDATE accounts SET usage = ?, usage_at = ? WHERE id = ?').run(JSON.stringify(e.usage), Date.now(), accountId);
+      } else {
         addEvent(taskId, e.kind, e.text);
         updateTask(taskId, {}); // refresh the card's activity line
       }
