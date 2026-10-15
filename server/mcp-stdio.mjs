@@ -15,6 +15,7 @@ const db = new DatabaseSync(process.env.TCC_DB);
 db.exec('PRAGMA busy_timeout = 10000');
 
 const SUMMARY_MAX = 350;
+const BOARD_ACTIONS = ['merge', 'done', 'discard'];
 
 const TOOLS = [
   {
@@ -33,19 +34,28 @@ const TOOLS = [
         options: {
           type: 'array',
           maxItems: 4,
-          description: 'One-click replies. The label is sent back verbatim as the user message. Recommended first.',
+          description:
+            'One-click replies. The label is sent back verbatim as the user message, unless the option has an action. Recommended first.',
           items: {
             type: 'object',
             properties: {
               label: { type: 'string', description: 'Self-contained instruction, e.g. "Go with approach A: patch the parser (Recommended)"' },
               detail: { type: 'string', description: 'Optional tradeoff in a few words, shown under the button' },
+              action: {
+                type: 'string',
+                enum: BOARD_ACTIONS,
+                description:
+                  'Makes this option run a board action instead of replying to you: "merge" merges your branch into the checked-out branch, ' +
+                  '"done" marks the task done (keeps the branch), "discard" deletes the work and branch (the user confirms first). ' +
+                  'You cannot do these yourself, so use this whenever you would suggest one, e.g. {label: "Looks good, merge it", action: "merge"}.',
+              },
             },
             required: ['label'],
           },
         },
         done: {
           type: 'boolean',
-          description: 'True when the task is complete and nothing more is needed. The board then offers its own merge and mark-done buttons, so leave those out of options.',
+          description: 'True when the task is complete and nothing more is needed. The board then shows its own merge and mark-done buttons, so no need to add those as options.',
         },
       },
       required: ['summary', 'options'],
@@ -189,6 +199,11 @@ async function callTool(name, args) {
       const options = list(args.options)
         .map((o) => (typeof o === 'string' ? { label: o } : o))
         .filter((o) => o?.label)
+        .map(({ label, detail, action }) => ({
+          label: String(label),
+          ...(detail && { detail: String(detail) }),
+          ...(BOARD_ACTIONS.includes(action) && { action }),
+        }))
         .slice(0, 4);
       updateTask({ checkpoint: JSON.stringify({ summary, ...(details && { details }), options, done: Boolean(args.done) }) });
       addEvent('checkpoint', details ? `${summary}\n\n${details}` : summary);

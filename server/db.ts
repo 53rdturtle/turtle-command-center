@@ -109,10 +109,12 @@ export type TaskStatus =
   | 'queued' | 'running' | 'needs_input' | 'split_proposed' | 'split'
   | 'limited' | 'failed' | 'done' | 'discarded';
 
+/** A board button an agent can offer as a checkpoint option; clicking it does the action instead of replying. */
+export type BoardAction = 'merge' | 'done' | 'discard';
 export interface Checkpoint {
   summary: string;
   details?: string;
-  options: { label: string; detail?: string }[];
+  options: { label: string; detail?: string; action?: BoardAction }[];
   done?: boolean;
 }
 export interface SplitProposal {

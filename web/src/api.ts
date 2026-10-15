@@ -1,4 +1,5 @@
-export interface Option { label: string; detail?: string }
+/** merge / done / discard options run the board's own action instead of replying to the agent. */
+export interface Option { label: string; detail?: string; action?: 'merge' | 'done' | 'discard' }
 export interface Checkpoint { summary: string; details?: string; options: Option[]; done?: boolean }
 export interface Subtask { title: string; prompt: string }
 export interface Split { rationale: string; subtasks: Subtask[] }
