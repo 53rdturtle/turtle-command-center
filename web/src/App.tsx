@@ -174,6 +174,7 @@ function NewTask({ project }: { project: Project }) {
   const [description, setDescription] = useState('');
   const [model, setModel] = useState(project.defaultModel);
   const [expanded, setExpanded] = useState(false);
+  const [descFocused, setDescFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const images = useImageInput(setDescription);
@@ -216,9 +217,13 @@ function NewTask({ project }: { project: Project }) {
           onChange={(e) => setDescription(e.target.value)}
           onKeyDown={enterToSubmit(submit)}
           {...images.handlers}
-          placeholder="Details, context, links, pasted screenshots… (optional, Enter to start, Ctrl+Enter for new line)"
+          onFocus={() => setDescFocused(true)}
+          onBlur={() => setDescFocused(false)}
+          placeholder="Details (optional)…"
+          aria-label="Task details"
         />
       )}
+      {expanded && descFocused && <small className="key-hint">Enter to start, Ctrl+Enter for new line. Paste screenshots here.</small>}
       {expanded && <ImageThumbs text={description} uploading={images.uploading} error={images.error} />}
       {error && <p className="error">{error}</p>}
     </form>

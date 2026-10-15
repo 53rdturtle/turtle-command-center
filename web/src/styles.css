@@ -233,7 +233,9 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .option code { background: rgb(0 0 0 / 0.08); padding: 0 4px; border-radius: 4px; }
 
 .reply { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; flex-wrap: wrap; }
-.reply textarea { flex: 1; min-width: 200px; }
+.reply textarea { flex: 1; min-width: 160px; }
+.reply:not(.expanded) textarea { resize: none; overflow: hidden; white-space: nowrap; }
+.key-hint { flex-basis: 100%; color: var(--muted); font-size: 12px; margin-top: -4px; }
 .thumbs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; flex-basis: 100%; font-size: 13px; }
 .thumbs img { display: block; height: 56px; max-width: 120px; object-fit: cover; border: 1px solid var(--border); border-radius: 4px; }
 
