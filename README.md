@@ -44,7 +44,9 @@ only share the SQLite database and log files.
 - `server/tasks.ts` has the scheduler and task lifecycle, and streams changes to the UI (SSE at `/api/stream`)
   by polling the database's `rev` counter.
 - **Merge into &lt;branch&gt;** merges the task branch (`--no-ff`) into whatever your main checkout has checked out, then removes
-  the worktree and branch. On conflicts the merge is aborted (your checkout is untouched) and you can ask the agent to resolve them.
+  the worktree and branch. It refuses up front if that checkout has uncommitted changes to tracked files (it lists them so you
+  can commit or stash), a detached HEAD, or a merge, rebase or cherry-pick in progress. On conflicts the merge is aborted
+  (your checkout is untouched) and you can ask the agent to resolve them; other git errors are shown as-is.
 - **Mark done** commits leftover changes and removes the worktree but keeps the `tcc/...` branch.
   **Discard** deletes the worktree and the branch.
 - Hitting a usage limit parks the task and retries it automatically after 30 minutes.

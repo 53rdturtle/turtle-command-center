@@ -48,7 +48,7 @@ export interface Project {
 
 export type MergeResult =
   | { ok: true; target: string }
-  | { ok: false; target: string; conflicts: string[]; message: string };
+  | { ok: false; target: string; reason: 'dirty' | 'detached' | 'in_progress' | 'conflicts' | 'error'; conflicts: string[]; files: string[]; message: string };
 
 export interface TaskEvent { id: number; task_id: number; ts: number; kind: string; text: string }
 
