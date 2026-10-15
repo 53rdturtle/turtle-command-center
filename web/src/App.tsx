@@ -377,7 +377,26 @@ function AgentSlots() {
   const [status, setStatus] = useState<{ running: number; maxConcurrent: number } | null>(null);
   useEffect(() => onStream((m) => m.type === 'status' && setStatus({ running: m.running, maxConcurrent: m.maxConcurrent })), []);
   if (!status) return null;
-  return <span className="slots" title="Agents running across all projects">{status.running}/{status.maxConcurrent} agents</span>;
+  const save = (value: string) => {
+    const n = Number(value);
+    if (n === status.maxConcurrent) return;
+    api.setMaxConcurrent(n).then(setStatus).catch((err) => alert(err.message));
+  };
+  return (
+    <span className="slots" title="Agents running across all projects. Edit the number to change the max; extra tasks queue.">
+      {status.running}/
+      <input
+        key={status.maxConcurrent}
+        type="number"
+        min={1}
+        max={50}
+        defaultValue={status.maxConcurrent}
+        onBlur={(e) => save(e.currentTarget.value)}
+        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+      />
+      agents
+    </span>
+  );
 }
 
 function NotifyToggle() {

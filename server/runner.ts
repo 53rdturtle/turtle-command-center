@@ -27,10 +27,14 @@ export interface RunRef {
 export type AgentEvent =
   | { kind: 'session'; sessionId: string }
   | { kind: 'assistant'; text: string }
-  | { kind: 'tool'; text: string };
+  | { kind: 'tool'; text: string }
+  /** Tokens in the main conversation as of its latest model call. */
+  | { kind: 'context'; tokens: number };
 
 export interface RunResult {
   costUsd: number;
+  /** Size of the model's context window, when the run reported it. */
+  contextWindow: number | null;
   resultText: string;
   isError: boolean;
   usageLimited: boolean;
@@ -64,6 +68,12 @@ function describeTool(name: string, input: Record<string, unknown>): string {
   const pick = input.command ?? input.file_path ?? input.pattern ?? input.url ?? input.query ?? input.description;
   const detail = typeof pick === 'string' ? pick : '';
   return detail ? `${name}: ${detail.length > 200 ? detail.slice(0, 200) + '…' : detail}` : name;
+}
+
+/** The result's per-model usage includes each model's window; the main model's is the largest. */
+function contextWindowOf(modelUsage: Record<string, { contextWindow?: number }> | undefined): number | null {
+  const sizes = Object.values(modelUsage ?? {}).map((u) => u.contextWindow ?? 0);
+  return Math.max(0, ...sizes) || null;
 }
 
 function isAlive(pid: number) {
@@ -141,6 +151,7 @@ export class CliRunner implements AgentRunner {
     let offset = startOffset;
     let result: Omit<RunResult, 'interrupted' | 'usageLimited'> | undefined;
     let finished = false;
+    let lastContext = -1;
 
     /** Handles complete lines past `offset`. The result line is never counted as handled until the
      *  process exits, so a restart in between reads it again. */
@@ -166,6 +177,7 @@ export class CliRunner implements AgentRunner {
         if (msg?.type === 'result') {
           result = {
             costUsd: msg.total_cost_usd ?? 0,
+            contextWindow: contextWindowOf(msg.modelUsage),
             resultText: typeof msg.result === 'string' ? msg.result : '',
             isError: Boolean(msg.is_error),
           };
@@ -177,6 +189,14 @@ export class CliRunner implements AgentRunner {
           for (const block of msg.message?.content ?? []) {
             if (block.type === 'text' && block.text?.trim()) handlers.onEvent({ kind: 'assistant', text: block.text });
             if (block.type === 'tool_use') handlers.onEvent({ kind: 'tool', text: describeTool(block.name, block.input ?? {}) });
+          }
+          // Subagent messages carry a parent_tool_use_id and have their own, separate context.
+          const usage = msg.message?.usage;
+          if (usage && !msg.parent_tool_use_id) {
+            const tokens = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0)
+              + (usage.cache_creation_input_tokens ?? 0) + (usage.output_tokens ?? 0);
+            if (tokens !== lastContext) handlers.onEvent({ kind: 'context', tokens });
+            lastContext = tokens;
           }
         }
         pos = nl + 1;
@@ -201,6 +221,7 @@ export class CliRunner implements AgentRunner {
           const errText = existsSync(ref.errLog) ? readFileSync(ref.errLog, 'utf8').trim() : '';
           handlers.onExit({
             costUsd: 0,
+            contextWindow: null,
             resultText: errText || 'The agent process exited without reporting a result.',
             isError: true,
             usageLimited: LIMIT_PATTERN.test(errText),

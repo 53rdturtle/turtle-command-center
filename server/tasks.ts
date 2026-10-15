@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { LIMIT_RETRY_MS, MAX_CONCURRENT } from './config.ts';
+import { LIMIT_RETRY_MS } from './config.ts';
 import {
-  addEvent, db, DB_PATH, getAccount, getPermission, getProject, getTask, lastEvent, listAccounts, pendingPermissions,
-  setRunOffset, tasksWithStatus, updateTask,
+  addEvent, db, DB_PATH, getAccount, getMaxConcurrent, getPermission, getProject, getTask, lastEvent, listAccounts,
+  listEvents, pendingPermissions, saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
   type AccountRow, type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
@@ -124,6 +124,8 @@ export function toDto(t: TaskRow) {
     merging: t.merge_state === 'resolving',
     retryAt: t.retry_at,
     costUsd: t.cost_usd,
+    contextTokens: t.context_tokens,
+    contextWindow: t.context_window,
     lastActivity: t.status === 'running' ? (lastEvent(t.id)?.text ?? null) : null,
     permissions: pendingPermissions(t.id).map((p) => {
       const input = JSON.parse(p.input);
@@ -147,7 +149,7 @@ Rules:
 - Decide small things yourself. Ask before large, risky, or irreversible choices.
 - On your first turn, investigate (read the code, reproduce the problem, check constraints) and report findings plus a proposed plan. Don't make large changes before the user picks a direction, unless the task is trivial.
 - If the task is clearly too big for one session, with parts that can proceed independently in parallel, call propose_split with self-contained subtask prompts instead of report_checkpoint.
-- When the task is finished, call report_checkpoint with done=true and summarize what changed.`;
+- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, and you can't do ${task.branch ? 'either' : 'that'} from here, so never offer options like "mark this done"${task.branch ? ' or "merge"' : ''}. A done checkpoint's options are only for optional follow-up work; an empty list is fine.`;
 }
 
 function initialPrompt(task: TaskRow) {
@@ -213,6 +215,13 @@ export function clearAccountLimit(id: number) {
 const runningCount = () => (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'running'`).get() as { n: number }).n;
 export { runningCount };
 
+/** Lowering the max never stops running agents; it only holds back queued ones. */
+export function setMaxConcurrent(n: number) {
+  if (!Number.isInteger(n) || n < 1 || n > 50) throw new Error('Max agents must be a whole number from 1 to 50');
+  saveMaxConcurrent(n);
+  pump();
+}
+
 /** Puts a prompt in line for the task's session; multiple queued prompts are combined. */
 function enqueue(taskId: number, prompt: string) {
   const task = getTask(taskId)!;
@@ -222,7 +231,7 @@ function enqueue(taskId: number, prompt: string) {
 }
 
 function pump() {
-  while (runningCount() < MAX_CONCURRENT) {
+  while (runningCount() < getMaxConcurrent()) {
     const next = tasksWithStatus('queued')[0];
     if (!next) return;
     const account = availableAccount();
@@ -281,6 +290,7 @@ function attach(taskId: number) {
   attached.set(taskId, runner.attach(ref, task.run_offset, {
     onEvent: (e) => {
       if (e.kind === 'session') updateTask(taskId, { session_id: e.sessionId, started: 1 });
+      else if (e.kind === 'context') updateTask(taskId, { context_tokens: e.tokens });
       else {
         addEvent(taskId, e.kind, e.text);
         updateTask(taskId, {}); // refresh the card's activity line
@@ -298,7 +308,7 @@ function attach(taskId: number) {
 function finish(taskId: number, result: RunResult) {
   const task = getTask(taskId)!;
   denyPending(taskId, 'The agent run ended.');
-  const base = { cost_usd: task.cost_usd + result.costUsd, run_ref: null };
+  const base = { cost_usd: task.cost_usd + result.costUsd, context_window: result.contextWindow ?? task.context_window, run_ref: null };
   if (result.resultText && !(task.status !== 'running' && result.interrupted)) {
     addEvent(taskId, result.isError ? 'error' : 'result', result.resultText);
   }
@@ -465,7 +475,7 @@ async function attemptMerge(taskId: number): Promise<MergeOutcome> {
   const task = getTask(taskId)!;
   if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
   const project = getProject(task.project_id)!;
-  const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, `Merge task #${taskId}: ${task.title}`);
+  const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, mergeMessage(task));
   if (result.ok) {
     updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null });
     addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
@@ -533,6 +543,47 @@ export async function diff(taskId: number) {
   if (!task) throw new Error('Task not found');
   if (!task.branch || !task.worktree) throw new Error('This task has no worktree to diff');
   return taskDiff(getProject(task.project_id)!.path, task.worktree);
+}
+
+const RESOLVE_PROMPT = /^The user clicked Merge, but your branch conflicts with /;
+// Prompts and notes the board writes into the timeline itself, as opposed to the user's replies.
+const BOARD_EVENTS = [
+  /^You were interrupted by a usage limit\./, /^Your previous run ended unexpectedly\./,
+  /^Merged `/, /^Approved split into \d+ subtasks\.$/, /^Opened the session in a terminal\.$/,
+  /hit its usage limit; continuing on /, /^Merging into `.*` conflicts in /, RESOLVE_PROMPT,
+];
+const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max).trimEnd()}…` : s);
+
+/**
+ * The task's request, outcome and the user's replies go into the merge commit, so git history
+ * keeps the "why" and an agent can answer questions about past work from `git log` alone.
+ */
+function mergeMessage(task: TaskRow) {
+  const parts = [`Merge task #${task.id}: ${task.title}`];
+  if (task.description.trim()) parts.push(`Request:\n${clip(task.description.trim(), 2000)}`);
+  const events = listEvents(task.id);
+  const first = events.find((e) => e.kind === 'user')?.text.trim();
+  const replies: string[] = [];
+  let outcome: string | null = null;
+  let resolving = false; // checkpoints from conflict-resolution runs aren't the task's outcome
+  for (const e of events.slice(events.findIndex((e) => e.kind === 'user') + 1)) {
+    const text = e.text.trim();
+    if (e.kind === 'checkpoint' && !resolving) outcome = text;
+    if (e.kind !== 'user') continue;
+    if (RESOLVE_PROMPT.test(text)) resolving = true;
+    // A run that hit a usage limit before starting re-sends the initial prompt, so skip repeats of it.
+    else if (text && text !== first && !BOARD_EVENTS.some((re) => re.test(text))) {
+      replies.push(text);
+      resolving = false;
+    }
+  }
+  if (replies.length) parts.push(`My replies:\n${replies.map((r) => `- ${clip(r, 500).replace(/\s*\n+\s*/g, ' ')}`).join('\n')}`);
+  if (!outcome && task.checkpoint) {
+    const cp = JSON.parse(task.checkpoint) as Checkpoint;
+    outcome = cp.details ? `${cp.summary}\n\n${cp.details}` : cp.summary;
+  }
+  if (outcome) parts.push(`Outcome:\n${clip(outcome, 4000)}`);
+  return parts.join('\n\n');
 }
 
 export async function discard(taskId: number) {
