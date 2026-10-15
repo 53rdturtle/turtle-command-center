@@ -29,11 +29,21 @@ export interface Task {
   split: Split | null;
   queuedPrompt: string | null;
   error: string | null;
-  /** The agent is resolving merge conflicts; the board merges when it's done. */
-  merging: boolean;
+  /** Place in the merge queue: waiting, merging now, or the agent is resolving conflicts first. */
+  mergeState: 'queued' | 'merging' | 'resolving' | null;
+  /** 1-based place in line while queued, 0 while merging, otherwise null. */
+  mergePosition: number | null;
+  /** Why the last merge didn't land; cleared on dismiss or the next merge. */
+  mergeFailure: MergeFailure | null;
   retryAt: number | null;
   costUsd: number;
+  /** Tokens in the session's context as of its latest model call. */
+  contextTokens: number | null;
+  /** The model's context window; known once a run has finished. */
+  contextWindow: number | null;
   lastActivity: string | null;
+  /** Counts over all subtasks, including discarded ones (which the board doesn't list). */
+  subtasks: { total: number; done: number; discarded: number } | null;
   permissions: Permission[];
   createdAt: number;
   updatedAt: number;
@@ -53,6 +63,9 @@ export interface Project {
   suggestedTryCommand: string;
 }
 
+/** Fraction used (0-1); resetsAt is null once the window has reset since it was reported. */
+export interface UsageWindow { utilization: number; resetsAt: number | null }
+export interface AccountUsage { fiveHour: UsageWindow | null; sevenDay: UsageWindow | null; reportedAt: number }
 /** Environment "Try it" gave the terminal: free ports and a sandbox data dir, so a copy of this app can't clash with the board. */
 export interface TryEnv { TCC_PORT: string; TCC_DEV_PORT: string; TCC_DATA_DIR: string }
 
@@ -61,15 +74,23 @@ export interface Account {
   name: string;
   /** False for the account the `claude` CLI is logged in to. */
   usesToken: boolean;
+  /** The account new runs start on. */
+  active: boolean;
   limitedUntil: number | null;
+  /** Last usage the CLI reported during a run on this account; null until one has run. */
+  usage: AccountUsage | null;
   running: number;
 }
 
-export type MergeResult =
-  | { ok: true; target: string }
-  | { ok: false; target: string; conflicts: string[]; message: string }
-  /** Conflicts were handed to the task's agent; the merge finishes on its own. */
-  | { ok: false; resolving: true; target: string; conflicts: string[] };
+/** `reason` and `files` are missing on failures stored before they existed. */
+export interface MergeFailure {
+  target: string;
+  reason?: 'dirty' | 'detached' | 'in_progress' | 'conflicts' | 'error';
+  conflicts: string[];
+  /** Modified files, when reason is 'dirty' */
+  files?: string[];
+  message: string;
+}
 
 export interface DiffFile {
   path: string;
@@ -97,7 +118,21 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
   return data as T;
 }
 
+export type BoardVersion = { startedAt: number; current: string | null } & (
+  | { canUpdate: false }
+  | {
+      canUpdate: true;
+      /** Commits in the main checkout that this board doesn't run yet. */
+      behind: number;
+      updating: boolean;
+      merges: { merging: number; queued: number };
+      lastError: string | null;
+    }
+);
+
 export const api = {
+  boardVersion: () => call<BoardVersion>('GET', '/api/board-version'),
+  updateBoard: () => call('POST', '/api/board-update'),
   projects: () => call<Project[]>('GET', '/api/projects'),
   pickFolder: () => call<{ path: string | null }>('POST', '/api/pick-folder').then((r) => r.path),
   addProject: (p: { name: string; path: string; defaultModel: string; permissionMode: string }) =>
@@ -121,7 +156,9 @@ export const api = {
   openTerminal: (id: number) => call('POST', `/api/tasks/${id}/open-terminal`),
   tryIt: (id: number) => call<TryEnv>('POST', `/api/tasks/${id}/try`),
   mergeable: (id: number) => call<{ mergeable: boolean }>('GET', `/api/tasks/${id}/mergeable`).then((r) => r.mergeable),
-  merge: (id: number) => call<MergeResult>('POST', `/api/tasks/${id}/merge`),
+  merge: (id: number) => call('POST', `/api/tasks/${id}/merge`),
+  cancelMerge: (id: number) => call('POST', `/api/tasks/${id}/merge/cancel`),
+  dismissMergeFailure: (id: number) => call('POST', `/api/tasks/${id}/merge/dismiss`),
   permission: (id: string, decision: 'allow' | 'always' | 'deny') => call('POST', `/api/permissions/${id}`, { decision }),
   setMaxConcurrent: (maxConcurrent: number) =>
     call<{ running: number; maxConcurrent: number }>('PATCH', '/api/settings', { maxConcurrent }),
@@ -132,7 +169,7 @@ export const api = {
 export type StreamMessage =
   | { type: 'task'; task: Task }
   | { type: 'event'; event: TaskEvent }
-  | { type: 'status'; running: number; maxConcurrent: number };
+  | { type: 'status'; running: number; maxConcurrent: number; usage: (AccountUsage & { account: string }) | null };
 
 type Handler = (m: StreamMessage) => void;
 const handlers = new Set<Handler>();
@@ -155,7 +192,9 @@ export const MODELS = ['sonnet', 'opus', 'haiku'];
 export const PERMISSION_MODES = ['acceptEdits', 'auto', 'manual', 'plan', 'bypassPermissions'];
 
 /** The agent reported done=true and is waiting for your final review; Mark done / Merge moves it to Done. */
-export const agentDone = (t: Task) => t.status === 'needs_input' && Boolean(t.checkpoint?.done) && t.permissions.length === 0;
+export const agentDone = (t: Task) =>
+  t.status === 'needs_input' && Boolean(t.checkpoint?.done) && t.permissions.length === 0 && !t.mergeState && !t.mergeFailure;
 
 export const needsAttention = (t: Task) =>
-  t.permissions.length > 0 || (t.status === 'needs_input' && !agentDone(t)) || t.status === 'split_proposed' || t.status === 'failed';
+  t.permissions.length > 0 || Boolean(t.mergeFailure) ||
+  (t.status === 'needs_input' && !t.checkpoint?.done && !t.mergeState) || t.status === 'split_proposed' || t.status === 'failed';

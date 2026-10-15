@@ -85,13 +85,25 @@ for (const [name, type] of [
   ['run_ref', 'TEXT'], // the live agent process (JSON from AgentRunner.start)
   ['run_offset', 'INTEGER NOT NULL DEFAULT 0'], // bytes of the run's output log already processed
   ['run_prompt', 'TEXT'], // prompt of the current run, for retrying after a usage limit
-  ['merge_state', 'TEXT'], // 'resolving' while the agent resolves merge conflicts; the board then finishes the merge
+  ['merge_state', 'TEXT'], // place in the merge queue: 'queued', 'merging', or 'resolving' while the agent resolves conflicts
   ['merge_attempts', 'INTEGER NOT NULL DEFAULT 0'], // automatic conflict-resolution rounds for the current merge
   ['account_id', 'INTEGER'], // account of the current (or last) run
+  ['merge_queued_at', 'INTEGER'], // when Merge was clicked; the merge queue goes in this order
+  ['merge_failure', 'TEXT'], // why the last merge didn't land (JSON MergeFailure), until dismissed or retried
+  ['context_tokens', 'INTEGER'], // tokens in the session's context as of its latest model call
+  ['context_window', 'INTEGER'], // the model's context window size, reported when a run ends
 ] as const) {
   if (!taskColumns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
 }
 db.exec('CREATE INDEX IF NOT EXISTS tasks_by_rev ON tasks(rev)');
+
+const accountColumns = new Set((db.prepare('PRAGMA table_info(accounts)').all() as { name: string }[]).map((c) => c.name));
+for (const [name, type] of [
+  ['usage', 'TEXT'], // last subscription usage the CLI reported (JSON AccountUsage)
+  ['usage_at', 'INTEGER'], // when it was reported
+] as const) {
+  if (!accountColumns.has(name)) db.exec(`ALTER TABLE accounts ADD COLUMN ${name} ${type}`);
+}
 
 const projectColumns = new Set((db.prepare('PRAGMA table_info(projects)').all() as { name: string }[]).map((c) => c.name));
 if (!projectColumns.has('try_command')) db.exec('ALTER TABLE projects ADD COLUMN try_command TEXT'); // "Try it" button; NULL opens a plain shell
@@ -123,9 +135,18 @@ export interface TaskRow {
   pending_prompt: string | null; error: string | null; retry_at: number | null; cost_usd: number;
   created_at: number; updated_at: number;
   rev: number; run_ref: string | null; run_offset: number; run_prompt: string | null;
-  merge_state: 'resolving' | null; merge_attempts: number; account_id: number | null;
+  merge_state: MergeState | null; merge_attempts: number; account_id: number | null;
+  merge_queued_at: number | null; merge_failure: string | null;
+  context_tokens: number | null; context_window: number | null;
 }
-export interface AccountRow { id: number; name: string; token: string | null; limited_until: number | null; created_at: number }
+export type MergeState = 'queued' | 'merging' | 'resolving';
+export type MergeFailureReason = 'dirty' | 'detached' | 'in_progress' | 'conflicts' | 'error';
+/** `reason` and `files` are missing on failures stored before they existed. */
+export interface MergeFailure { target: string; reason?: MergeFailureReason; conflicts: string[]; files?: string[]; message: string }
+export interface AccountRow {
+  id: number; name: string; token: string | null; limited_until: number | null; created_at: number;
+  usage: string | null; usage_at: number | null;
+}
 export interface EventRow { id: number; task_id: number; ts: number; kind: string; text: string }
 export interface PermissionRow {
   id: string; task_id: number; tool_name: string; input: string;

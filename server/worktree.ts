@@ -2,8 +2,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync } from 'node:fs';
 import { DATA_DIR } from './config.ts';
+import type { MergeFailureReason } from './db.ts';
 
 const exec = promisify(execFile);
 
@@ -47,13 +48,31 @@ export async function createWorktree(repo: string, projectSlug: string, taskId: 
   return { path, branch };
 }
 
+/** Removes links (symlinks, junctions) in a worktree without following them; skips .git and node_modules contents. */
+function unlinkLinks(dir: string) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (lstatSync(path).isSymbolicLink()) unlinkSync(path); // for a junction this removes the link, not its target
+    else if (entry.isDirectory() && entry.name !== '.git' && entry.name !== 'node_modules') unlinkLinks(path);
+  }
+}
+
+/**
+ * On Windows, `git worktree remove --force` follows junctions and deletes what they point to. Agents sometimes
+ * link the main checkout's node_modules into their worktree, which wiped it on merge; so unlink links first.
+ */
+async function removeWorktree(repo: string, path: string) {
+  if (existsSync(path)) unlinkLinks(path);
+  await git(repo, 'worktree', 'remove', '--force', path);
+}
+
 /** Commits anything left uncommitted so removing the worktree never loses work. */
 export async function saveAndRemoveWorktree(repo: string, path: string, taskId: number) {
   if ((await git(path, 'status', '--porcelain')) !== '') {
     await git(path, 'add', '-A');
     await git(path, 'commit', '-m', `tcc: uncommitted work from task #${taskId}`);
   }
-  await git(repo, 'worktree', 'remove', '--force', path);
+  await removeWorktree(repo, path);
 }
 
 export async function currentBranch(repo: string) {
@@ -72,18 +91,47 @@ export async function hasWorkToMerge(repo: string, worktree: string, branch: str
 
 export type MergeResult =
   | { ok: true; target: string }
-  | { ok: false; target: string; conflicts: string[]; message: string };
+  | { ok: false; target: string; reason: MergeFailureReason; conflicts: string[]; files: string[]; message: string };
+
+const IN_PROGRESS: [string, string][] = [
+  ['MERGE_HEAD', 'a merge'],
+  ['rebase-merge', 'a rebase'],
+  ['rebase-apply', 'a rebase'],
+  ['CHERRY_PICK_HEAD', 'a cherry-pick'],
+];
+
+/** Why the main checkout can't safely take a merge right now, or null if it can. */
+async function checkoutBlocker(repo: string): Promise<Omit<Extract<MergeResult, { ok: false }>, 'ok' | 'target'> | null> {
+  for (const [name, what] of IN_PROGRESS) {
+    if (existsSync(resolve(repo, await git(repo, 'rev-parse', '--git-path', name)))) {
+      return { reason: 'in_progress', conflicts: [], files: [], message: `Your checkout is in the middle of ${what}. Finish or abort it first.` };
+    }
+  }
+  if ((await currentBranch(repo)) === 'HEAD') {
+    return { reason: 'detached', conflicts: [], files: [], message: 'Your checkout has a detached HEAD. Check out a branch first.' };
+  }
+  // Not via git(): trimming would eat the leading status column of the first line.
+  const { stdout } = await exec('git', ['-C', repo, 'status', '--porcelain', '--untracked-files=no'], { windowsHide: true });
+  const files = stdout.split('\n').filter(Boolean).map((line) => line.slice(3).replace(/^.* -> /, ''));
+  if (files.length) {
+    return { reason: 'dirty', conflicts: [], files, message: 'Your checkout has uncommitted changes. Commit or stash them first.' };
+  }
+  return null;
+}
 
 /**
  * Merges a task branch into whatever branch the main checkout is on.
- * On conflicts nothing is merged, leaving the user's checkout as it was.
+ * Refuses if that checkout is dirty, detached or mid-operation; on conflicts
+ * nothing is merged, leaving the user's checkout as it was.
  */
 export async function mergeTaskBranch(repo: string, worktree: string, branch: string, taskId: number, message: string): Promise<MergeResult> {
+  const target = (await currentBranch(repo)) ?? 'HEAD';
+  const blocker = await checkoutBlocker(repo);
+  if (blocker) return { ok: false, target, ...blocker };
   if ((await git(worktree, 'status', '--porcelain')) !== '') {
     await git(worktree, 'add', '-A');
     await git(worktree, 'commit', '-m', `tcc: uncommitted work from task #${taskId}`);
   }
-  const target = (await currentBranch(repo)) ?? 'HEAD';
   // Find conflicts in memory first. A conflicting `git merge` writes conflict markers into the checkout, and when
   // the project is this app, that restarts the dev server before the merge can be aborted or reported.
   try {
@@ -92,7 +140,7 @@ export async function mergeTaskBranch(repo: string, worktree: string, branch: st
     // Exit code 1 means conflicts. stdout is the tree id, the conflicted paths, a blank line, then git's messages.
     if (err.code !== 1) throw err;
     const [files, messages = ''] = String(err.stdout).split(/\r?\n\r?\n/);
-    return { ok: false, target, conflicts: files.split(/\r?\n/).slice(1).filter(Boolean), message: messages.trim() };
+    return { ok: false, target, reason: 'conflicts', conflicts: files.split(/\r?\n/).slice(1).filter(Boolean), files: [], message: messages.trim() };
   }
   try {
     await git(repo, 'merge', '--no-ff', '-m', message, branch);
@@ -101,9 +149,9 @@ export async function mergeTaskBranch(repo: string, worktree: string, branch: st
       .split('\n').filter(Boolean);
     if (conflicts.length) await git(repo, 'merge', '--abort').catch(() => {});
     const detail = String(err.stderr || err.stdout || err.message).trim();
-    return { ok: false, target, conflicts, message: detail };
+    return { ok: false, target, reason: conflicts.length ? 'conflicts' : 'error', conflicts, files: [], message: detail };
   }
-  await git(repo, 'worktree', 'remove', '--force', worktree);
+  await removeWorktree(repo, worktree);
   await git(repo, 'branch', '-d', branch).catch(() => {});
   return { ok: true, target };
 }
@@ -126,7 +174,7 @@ export async function restoreWorktree(repo: string, path: string, branch: string
 }
 
 export async function discardWorktree(repo: string, path: string, branch: string) {
-  await git(repo, 'worktree', 'remove', '--force', path).catch(() => {});
+  await removeWorktree(repo, path).catch(() => {});
   await git(repo, 'branch', '-D', branch).catch(() => {});
 }
 

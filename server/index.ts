@@ -8,10 +8,11 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { PORT } from './config.ts';
 import { db, getMaxConcurrent, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
 import { localOnly } from './guard.ts';
+import { boardVersion, startUpdate } from './selfUpdate.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
   accountsDto, addAccount, answerPermission, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
-  merge, mergeable, openInTerminal, tryIt, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, toDto,
+  cancelMerge, dismissMergeFailure, merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, toDto, tryIt,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
 
@@ -118,7 +119,9 @@ app.post('/api/tasks/:id/discard', async (c) => (await discard(taskId(c)), c.jso
 app.post('/api/tasks/:id/open-terminal', async (c) => (await openInTerminal(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/try', async (c) => c.json(await tryIt(taskId(c))));
 app.get('/api/tasks/:id/mergeable', async (c) => c.json({ mergeable: await mergeable(taskId(c)) }));
-app.post('/api/tasks/:id/merge', async (c) => c.json(await merge(taskId(c))));
+app.post('/api/tasks/:id/merge', (c) => c.json(merge(taskId(c))));
+app.post('/api/tasks/:id/merge/cancel', (c) => (cancelMerge(taskId(c)), c.json({ ok: true })));
+app.post('/api/tasks/:id/merge/dismiss', (c) => (dismissMergeFailure(taskId(c)), c.json({ ok: true })));
 
 app.post('/api/permissions/:id', async (c) => {
   const { decision, message } = await c.req.json();
@@ -127,6 +130,9 @@ app.post('/api/permissions/:id', async (c) => {
 });
 
 const status = () => ({ running: runningCount(), maxConcurrent: getMaxConcurrent() });
+app.get('/api/board-version', async (c) => c.json(await boardVersion()));
+app.post('/api/board-update', async (c) => (await startUpdate(), c.json({ ok: true })));
+
 app.get('/api/status', (c) => c.json(status()));
 app.patch('/api/settings', async (c) => {
   const { maxConcurrent } = await c.req.json();
@@ -143,7 +149,9 @@ app.get('/api/stream', (c) =>
     });
     stream.onAbort(() => { unsubscribe(); });
     while (!stream.aborted) {
-      await stream.writeSSE({ event: 'status', data: JSON.stringify(status()) });
+      const account = accountsDto().find((a) => a.active);
+      const usage = account?.usage ? { account: account.name, ...account.usage } : null;
+      await stream.writeSSE({ event: 'status', data: JSON.stringify({ ...status(), usage }) });
       await stream.sleep(5000);
     }
   }));

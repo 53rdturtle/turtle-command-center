@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type Project, type Task } from './api.ts';
+import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type Task } from './api.ts';
 import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
@@ -53,6 +53,8 @@ export function App() {
         {project && <button className="ghost" onClick={() => setShowSettings((s) => !s)}>Settings</button>}
         <button className="ghost" onClick={() => setShowAccounts((s) => !s)}>Accounts</button>
         <span className="spacer" />
+        <BoardUpdate />
+        <UsagePill />
         <AgentSlots />
         <NotifyToggle />
       </header>
@@ -104,7 +106,10 @@ function Board({ project }: { project: Project }) {
   const all = [...tasks.values()];
   const byUpdate = (a: Task, b: Task) => a.updatedAt - b.updatedAt;
   const attention = all.filter(needsAttention).sort(byUpdate);
-  const working = all.filter((t) => !needsAttention(t) && ['running', 'queued', 'limited'].includes(t.status)).sort(byUpdate);
+  const working = all.filter((t) => !needsAttention(t) && !t.mergeState && ['running', 'queued', 'limited'].includes(t.status)).sort(byUpdate);
+  // Merging now, then the queue in order, then tasks whose agent is resolving conflicts before rejoining it.
+  const mergeOrder = (t: Task) => t.mergePosition ?? Infinity;
+  const mergeQueue = all.filter((t) => !needsAttention(t) && t.mergeState).sort((a, b) => mergeOrder(a) - mergeOrder(b) || byUpdate(a, b));
   const parked = all.filter((t) => !needsAttention(t) && t.status === 'split');
   const review = all.filter(agentDone).sort(byUpdate);
   const done = all.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt);
@@ -118,6 +123,7 @@ function Board({ project }: { project: Project }) {
         parent={t.parentId ? tasks.get(t.parentId) : undefined}
         children={all.filter((c) => c.parentId === t.id)}
         targetBranch={project.currentBranch}
+        defaultModel={project.defaultModel}
         tryCommand={project.tryCommand}
       />
     </CardErrorBoundary>
@@ -133,8 +139,11 @@ function Board({ project }: { project: Project }) {
           {review.length > 0 && <Section title="Ready for review" count={review.length}>{review.map(card)}</Section>}
         </div>
         <div className="column">
-          <h1 className="column-title">Working <span className="count">{working.length + parked.length}</span></h1>
+          <h1 className="column-title">Working <span className="count">{working.length + mergeQueue.length + parked.length}</span></h1>
           <Section title="Running" count={working.length} empty="No agents running.">{working.map(card)}</Section>
+          {mergeQueue.length > 0 && (
+            <Section title={`Merging into ${project.currentBranch ?? 'your branch'}`} count={mergeQueue.length}>{mergeQueue.map(card)}</Section>
+          )}
           {parked.length > 0 && <Section title="Split into subtasks" count={parked.length}>{parked.map(card)}</Section>}
         </div>
       </div>
@@ -356,8 +365,10 @@ function Accounts() {
               <strong>{a.name}</strong>
               <span className="muted">
                 {a.usesToken ? 'token' : 'claude CLI login'}
+                {a.active && accounts.length > 1 && <> · in use</>}
                 {a.running > 0 && <> · {a.running} running</>}
               </span>
+              <Usage usage={a.usage} />
               {a.limitedUntil && (
                 <>
                   <span className="pill pill-limited">Limited until {clock(a.limitedUntil)}</span>
@@ -384,6 +395,120 @@ function Accounts() {
       </p>
       {error && <p className="error">{error}</p>}
     </section>
+  );
+}
+
+const percent = (w: UsageWindow) => `${Math.round(w.utilization * 100)}%`;
+const ago = (ms: number) => {
+  const min = Math.round((Date.now() - ms) / 60_000);
+  return min < 1 ? 'just now' : min < 60 ? `${min}m ago` : `${Math.round(min / 60)}h ago`;
+};
+const resetLabel = (w: UsageWindow) => {
+  if (!w.resetsAt) return 'reset since last report';
+  const sameDay = new Date(w.resetsAt).toDateString() === new Date().toDateString();
+  return `resets ${sameDay ? clock(w.resetsAt) : new Date(w.resetsAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`;
+};
+
+function UsageBar({ label, window: w }: { label: string; window: UsageWindow }) {
+  const level = w.utilization >= 0.9 ? 'high' : w.utilization >= 0.7 ? 'mid' : 'low';
+  return (
+    <span className="usage" title={`${label} window: ${percent(w)} used, ${resetLabel(w)}`}>
+      <span className="usage-label">{label}</span>
+      <span className="usage-bar"><span className={`usage-fill usage-${level}`} style={{ width: percent(w) }} /></span>
+      <span className="usage-pct">{percent(w)}</span>
+    </span>
+  );
+}
+
+/** Usage is only reported while an agent runs on the account, so it can be stale when idle. */
+function Usage({ usage }: { usage: AccountUsage | null }) {
+  if (!usage) return <span className="muted">usage shows after its first run</span>;
+  return (
+    <span className="usage-group">
+      {usage.fiveHour && <UsageBar label="5h" window={usage.fiveHour} />}
+      {usage.sevenDay && <UsageBar label="7d" window={usage.sevenDay} />}
+      <span className="muted usage-age">as of {ago(usage.reportedAt)}</span>
+    </span>
+  );
+}
+
+/** The account new runs start on, and how much of its usage is left. */
+function UsagePill() {
+  const [usage, setUsage] = useState<(AccountUsage & { account: string }) | null>(null);
+  useEffect(() => onStream((m) => m.type === 'status' && setUsage(m.usage ?? null)), []);
+  if (!usage?.fiveHour && !usage?.sevenDay) return null;
+  const title = [
+    usage.account,
+    usage.fiveHour && `5-hour: ${percent(usage.fiveHour)} used, ${resetLabel(usage.fiveHour)}`,
+    usage.sevenDay && `7-day: ${percent(usage.sevenDay)} used, ${resetLabel(usage.sevenDay)}`,
+    `as of ${ago(usage.reportedAt)}`,
+  ].filter(Boolean).join('\n');
+  return (
+    <span className="slots" title={title}>
+      {usage.fiveHour && <UsageBar label="5h" window={usage.fiveHour} />}
+      {usage.sevenDay && <UsageBar label="7d" window={usage.sevenDay} />}
+    </span>
+  );
+}
+
+/** Shows when tasks merged into the main checkout are newer than this board; one click updates and reloads it. */
+function BoardUpdate() {
+  const [version, setVersion] = useState<BoardVersion | null>(null);
+  const [phase, setPhase] = useState<'idle' | 'updating' | 'failed'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const before = useRef<BoardVersion | null>(null);
+
+  useEffect(() => {
+    const load = () => api.boardVersion().then(setVersion).catch(() => {});
+    load();
+    const timer = setInterval(load, 60_000);
+    addEventListener('focus', load);
+    return () => (clearInterval(timer), removeEventListener('focus', load));
+  }, []);
+
+  // While updating, wait for the restarted server: reload on a new version, report a rollback otherwise.
+  useEffect(() => {
+    if (phase !== 'updating') return;
+    const timer = setInterval(async () => {
+      const next = await api.boardVersion().catch(() => null);
+      if (!next || !before.current || next.startedAt === before.current.startedAt) {
+        if (next) setVersion(next); // still waiting for a merge to finish
+        return;
+      }
+      if (next.current !== before.current.current) location.reload();
+      else {
+        setVersion(next);
+        setError(next.canUpdate ? next.lastError : null);
+        setPhase('failed');
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [phase]);
+
+  if (!version?.canUpdate || (version.behind === 0 && phase === 'idle')) return null;
+  const busyMerges = version.merges.merging + version.merges.queued;
+  const update = () => {
+    before.current = version;
+    setError(null);
+    setPhase('updating');
+    api.updateBoard().catch((e) => (setError((e as Error).message), setPhase('failed')));
+  };
+
+  const mergeWarning = busyMerges > 0
+    ? `${busyMerges} merge${busyMerges === 1 ? ' is' : 's are'} in progress or queued. The update waits for the current one to finish; queued ones continue after the restart.`
+    : '';
+  return (
+    <span className="board-update">
+      {phase === 'updating' ? (
+        <span className="slots">{version.merges.merging > 0 ? 'Waiting for the merge to finish…' : 'Updating the board…'}</span>
+      ) : (
+        <button className="ghost" onClick={update} title={mergeWarning || `Update to the latest ${version.behind} commit(s) and reload`}>
+          {busyMerges > 0 && '⚠ '}Update board ({version.behind} new)
+        </button>
+      )}
+      {phase !== 'updating' && busyMerges > 0 && <span className="warn-text">merging</span>}
+      {phase === 'failed' && <span className="error" title={error ?? ''}>Update failed; still on {version.current}.</span>}
+    </span>
   );
 }
 

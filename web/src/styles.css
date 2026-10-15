@@ -99,6 +99,17 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .spacer { flex: 1; }
 .slots { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .slots input { width: 3.5em; margin: 0 4px 0 1px; padding: 2px 4px; font-size: 13px; text-align: center; }
+.slots .usage + .usage { margin-left: 10px; }
+
+.usage-group { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.usage { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.usage-bar { width: 56px; height: 6px; border-radius: 99px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
+.usage-fill { display: block; height: 100%; }
+.usage-low { background: var(--accent); }
+.usage-mid { background: var(--warn); }
+.usage-high { background: var(--danger); }
+.usage-pct { font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }
+.usage-age { font-size: 12px; }
 
 .panel, .new-task, .card {
   background: var(--surface);
@@ -183,6 +194,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 
 .meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
 .chip { font-size: 12px; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 1px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-warn { background: var(--warn-soft); color: var(--warn); }
 
 .card-body { display: grid; gap: 10px; }
 .activity { margin: 0; font-family: var(--mono); font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -228,8 +240,23 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .error { color: var(--danger); margin: 6px 0 0; font-size: 13px; }
 .error-box { background: var(--danger-soft); color: var(--danger); padding: 8px 10px; border-radius: 6px; max-height: 200px; overflow: auto; }
 
-.card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .card-actions button { padding: 3px 10px; font-size: 13px; }
+.confirm-text { font-size: 13px; }
+
+.menu { position: relative; }
+.menu-list {
+  position: absolute; right: 0; bottom: calc(100% + 4px); z-index: 10;
+  min-width: 190px; padding: 4px; display: grid;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.15);
+}
+.card-actions .menu-item {
+  background: none; color: var(--text); border: none; border-radius: 6px;
+  padding: 6px 10px; text-align: left; font-weight: 400; white-space: nowrap;
+}
+.card-actions .menu-item:hover:not(:disabled) { background: var(--surface-2); }
+.card-actions .menu-item.danger-text { color: var(--danger); }
 
 .transcript { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 10px; max-height: 420px; overflow-y: auto; display: grid; gap: 8px; }
 .ev { display: grid; grid-template-columns: 80px 1fr; gap: 8px; font-size: 13px; }
@@ -290,6 +317,8 @@ button.chip-button:hover { color: var(--text); }
 .dl.hunk { color: var(--info); background: var(--info-soft); }
 .dl.note { color: var(--muted); }
 
+.board-update { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.board-update .warn-text { color: var(--warn); font-size: 12px; }
 .panel .try-command { margin: 12px 0; }
 .panel .try-command span { font-size: 12px; }
 .try-note { font-size: 13px; margin: 8px 0 0; }
