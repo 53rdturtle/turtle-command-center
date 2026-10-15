@@ -393,6 +393,14 @@ const resetLabel = (w: UsageWindow) => {
   const sameDay = new Date(w.resetsAt).toDateString() === new Date().toDateString();
   return `resets ${sameDay ? clock(w.resetsAt) : new Date(w.resetsAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`;
 };
+/** Compact time until reset: "2h 14m" within a day, else the weekday and hour. */
+const resetShort = (w: UsageWindow) => {
+  if (!w.resetsAt) return 'reset';
+  const min = Math.max(0, Math.round((w.resetsAt - Date.now()) / 60_000));
+  if (min < 60) return `${min}m`;
+  if (min < 24 * 60) return `${Math.floor(min / 60)}h ${min % 60}m`;
+  return new Date(w.resetsAt).toLocaleString([], { weekday: 'short', hour: 'numeric' });
+};
 
 function UsageBar({ label, window: w }: { label: string; window: UsageWindow }) {
   const level = w.utilization >= 0.9 ? 'high' : w.utilization >= 0.7 ? 'mid' : 'low';
@@ -401,6 +409,7 @@ function UsageBar({ label, window: w }: { label: string; window: UsageWindow }) 
       <span className="usage-label">{label}</span>
       <span className="usage-bar"><span className={`usage-fill usage-${level}`} style={{ width: percent(w) }} /></span>
       <span className="usage-pct">{percent(w)}</span>
+      <span className="usage-reset">↻ {resetShort(w)}</span>
     </span>
   );
 }
@@ -430,6 +439,7 @@ function UsagePill() {
   ].filter(Boolean).join('\n');
   return (
     <span className="slots" title={title}>
+      <span className="usage-account">{usage.account}</span>
       {usage.fiveHour && <UsageBar label="5h" window={usage.fiveHour} />}
       {usage.sevenDay && <UsageBar label="7d" window={usage.sevenDay} />}
     </span>
