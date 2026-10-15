@@ -112,18 +112,18 @@ function Board({ project }: { project: Project }) {
   }, [project.slug]);
 
   const all = [...tasks.values()];
-  const byUpdate = (a: Task, b: Task) => a.updatedAt - b.updatedAt;
-  const attention = all.filter(needsAttention).sort(byUpdate);
-  const running = all.filter((t) => !needsAttention(t) && !t.mergeState && t.status === 'running').sort(byUpdate);
-  const waiting = all.filter((t) => !needsAttention(t) && !t.mergeState && ['queued', 'limited'].includes(t.status)).sort(byUpdate);
-  // Merging now, then the queue in order, then tasks whose agent is resolving conflicts before rejoining it.
-  const mergeOrder = (t: Task) => t.mergePosition ?? Infinity;
-  const mergeQueue = all.filter((t) => !needsAttention(t) && t.mergeState).sort((a, b) => mergeOrder(a) - mergeOrder(b) || byUpdate(a, b));
-  const parked = all.filter((t) => !needsAttention(t) && t.status === 'split');
-  const review = all.filter(agentDone).sort(byUpdate);
-  const done = all.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<Filter | null>(null);
+  const searching = query.trim() !== '';
+  const matched = searching ? all.filter(matches(query)) : all;
+  const unfiltered = group(all);
+  const { attention, running, waiting, mergeQueue, parked, review, done } = group(matched);
+  const workingCount = running.length + waiting.length + mergeQueue.length + parked.length;
+  const shown = (f: Filter) => !filter || filter === f;
+  const empty = (text: string) => (searching ? 'No matches.' : text);
+  const doneForced = done.length > 0 && (searching || filter === 'done');
 
-  useAttentionSignals(attention, review);
+  useAttentionSignals(unfiltered.attention, unfiltered.review);
 
   const card = (t: Task) => (
     <CardErrorBoundary key={t.id} taskId={t.id}>
@@ -138,34 +138,142 @@ function Board({ project }: { project: Project }) {
     </CardErrorBoundary>
   );
 
+  const actionColumn = shown('attention') || shown('review');
+  const workingColumn = shown('working');
   return (
     <main className="board">
       <NewTask project={project} />
-      <div className="columns">
-        <div className="column">
-          <h1 className="column-title">Action required <span className="count">{attention.length + review.length}</span></h1>
-          <Section title="Needs you" count={attention.length} empty="Nothing waiting on you. 🎉">{attention.map(card)}</Section>
-          {review.length > 0 && <Section title="Ready for review" count={review.length}>{review.map(card)}</Section>}
-        </div>
-        <div className="column">
-          <h1 className="column-title">Working <span className="count">{running.length + waiting.length + mergeQueue.length + parked.length}</span></h1>
-          <Section title="Running" count={running.length} empty="No agents running.">{running.map(card)}</Section>
-          {waiting.length > 0 && <Section title="Waiting" count={waiting.length}>{waiting.map(card)}</Section>}
-          {mergeQueue.length > 0 && (
-            <Section title={`Merging into ${project.currentBranch ?? 'your branch'}`} count={mergeQueue.length}>{mergeQueue.map(card)}</Section>
+      <FilterBar
+        query={query}
+        onQuery={setQuery}
+        filter={filter}
+        onFilter={setFilter}
+        counts={{ attention: attention.length, working: workingCount, review: review.length, done: done.length }}
+      />
+      {(actionColumn || workingColumn) && (
+        <div className={`columns${actionColumn && workingColumn ? '' : ' single'}`}>
+          {actionColumn && (
+            <div className="column">
+              <h1 className="column-title">Action required <span className="count">{(shown('attention') ? attention.length : 0) + (shown('review') ? review.length : 0)}</span></h1>
+              {shown('attention') && <Section title="Needs you" count={attention.length} empty={empty('Nothing waiting on you. 🎉')}>{attention.map(card)}</Section>}
+              {shown('review') && (review.length > 0 || filter === 'review') && (
+                <Section title="Ready for review" count={review.length} empty={empty('Nothing to review.')}>{review.map(card)}</Section>
+              )}
+            </div>
           )}
-          {parked.length > 0 && <Section title="Split into subtasks" count={parked.length}>{parked.map(card)}</Section>}
+          {workingColumn && (
+            <div className="column">
+              <h1 className="column-title">Working <span className="count">{workingCount}</span></h1>
+              <Section title="Running" count={running.length} empty={empty('No agents running.')}>{running.map(card)}</Section>
+              {waiting.length > 0 && <Section title="Waiting" count={waiting.length}>{waiting.map(card)}</Section>}
+              {mergeQueue.length > 0 && (
+                <Section title={`Merging into ${project.currentBranch ?? 'your branch'}`} count={mergeQueue.length}>{mergeQueue.map(card)}</Section>
+              )}
+              {parked.length > 0 && <Section title="Split into subtasks" count={parked.length}>{parked.map(card)}</Section>}
+            </div>
+          )}
         </div>
-      </div>
-      {done.length > 0 && (
+      )}
+      {shown('done') && (done.length > 0 || filter === 'done') && (
         <section className="section">
-          <button className="section-toggle" onClick={toggleDone}>
-            {showDone ? '▾' : '▸'} Done <span className="count">{done.length}</span>
-          </button>
-          {showDone && <div className="cards">{done.map(card)}</div>}
+          {doneForced ? (
+            <h2>Done <span className="count">{done.length}</span></h2>
+          ) : (
+            <button className="section-toggle" onClick={toggleDone} disabled={done.length === 0}>
+              {showDone ? '▾' : '▸'} Done <span className="count">{done.length}</span>
+            </button>
+          )}
+          {filter === 'done' && done.length === 0 && <p className="muted">{empty('Nothing done yet.')}</p>}
+          {(showDone || doneForced) && <div className="cards">{done.map(card)}</div>}
         </section>
       )}
     </main>
+  );
+}
+
+type Filter = 'attention' | 'working' | 'review' | 'done';
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: 'attention', label: 'Needs me' },
+  { key: 'working', label: 'Working' },
+  { key: 'review', label: 'Ready' },
+  { key: 'done', label: 'Done' },
+];
+
+/** Sorts tasks into the board's sections. */
+function group(all: Task[]) {
+  const byUpdate = (a: Task, b: Task) => a.updatedAt - b.updatedAt;
+  // Merging now, then the queue in order, then tasks whose agent is resolving conflicts before rejoining it.
+  const mergeOrder = (t: Task) => t.mergePosition ?? Infinity;
+  return {
+    attention: all.filter(needsAttention).sort(byUpdate),
+    running: all.filter((t) => !needsAttention(t) && !t.mergeState && t.status === 'running').sort(byUpdate),
+    waiting: all.filter((t) => !needsAttention(t) && !t.mergeState && ['queued', 'limited'].includes(t.status)).sort(byUpdate),
+    mergeQueue: all.filter((t) => !needsAttention(t) && t.mergeState).sort((a, b) => mergeOrder(a) - mergeOrder(b) || byUpdate(a, b)),
+    parked: all.filter((t) => !needsAttention(t) && t.status === 'split'),
+    review: all.filter(agentDone).sort(byUpdate),
+    done: all.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt),
+  };
+}
+
+/** Every word of the query must appear in the task's number, title, description or latest checkpoint summary. */
+const matches = (query: string) => {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return (t: Task) => {
+    const text = `#${t.id} ${t.title} ${t.description} ${t.checkpoint?.summary ?? ''}`.toLowerCase();
+    return words.every((w) => text.includes(w));
+  };
+};
+
+const typingIn = (el: Element | null) =>
+  el instanceof HTMLElement && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName));
+
+function FilterBar({ query, onQuery, filter, onFilter, counts }: {
+  query: string;
+  onQuery: (q: string) => void;
+  filter: Filter | null;
+  onFilter: (f: Filter | null) => void;
+  counts: Record<Filter, number>;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !typingIn(document.activeElement)) {
+        e.preventDefault();
+        input.current?.focus();
+      }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, []);
+
+  return (
+    <div className="filter-bar">
+      <input
+        ref={input}
+        type="search"
+        value={query}
+        onChange={(e) => onQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== 'Escape') return;
+          e.preventDefault();
+          if (query) onQuery('');
+          else e.currentTarget.blur();
+        }}
+        placeholder="Search tasks…  ( / )"
+        aria-label="Search tasks"
+      />
+      {FILTERS.map(({ key, label }) => (
+        <button
+          key={key}
+          type="button"
+          className={`chip${filter === key ? ' chip-on' : ''}`}
+          aria-pressed={filter === key}
+          onClick={() => onFilter(filter === key ? null : key)}
+        >
+          {label} <span className="count">{counts[key]}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 
