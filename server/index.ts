@@ -111,9 +111,9 @@ app.get('/api/tasks/:id/events', (c) => c.json(listEvents(taskId(c))));
 app.get('/api/tasks/:id/diff', async (c) => c.json(await diff(taskId(c))));
 
 app.post('/api/tasks/:id/reply', async (c) => {
-  const { text } = await c.req.json();
+  const { text, model } = await c.req.json();
   if (!text?.trim()) throw new Error('Reply is empty');
-  reply(taskId(c), text.trim());
+  reply(taskId(c), text.trim(), model);
   return c.json({ ok: true });
 });
 
