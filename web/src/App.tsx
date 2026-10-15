@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Project, type Task } from './api.ts';
+import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Project, type Task } from './api.ts';
 import { CardErrorBoundary, TaskCard } from './TaskCard.tsx';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
@@ -81,7 +81,8 @@ export function App() {
 
 function Board({ project }: { project: Project }) {
   const [tasks, setTasks] = useState<Map<number, Task>>(new Map());
-  const [showDone, setShowDone] = useState(false);
+  const [showDone, setShowDone] = useState(() => localStorage.getItem('tcc.showDone') === '1');
+  const toggleDone = () => setShowDone((s) => (localStorage.setItem('tcc.showDone', s ? '0' : '1'), !s));
 
   useEffect(() => {
     api.tasks(project.slug).then((list) => setTasks(new Map(list.map((t) => [t.id, t]))));
@@ -102,9 +103,12 @@ function Board({ project }: { project: Project }) {
   const attention = all.filter(needsAttention).sort(byUpdate);
   const working = all.filter((t) => !needsAttention(t) && ['running', 'queued', 'limited'].includes(t.status)).sort(byUpdate);
   const parked = all.filter((t) => !needsAttention(t) && t.status === 'split');
-  const done = all.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt);
+  // Tasks the agent reported done (still reviewable/mergeable) sort above ones you've already closed out.
+  const finished = all.filter(agentDone);
+  const done = [...finished, ...all.filter((t) => t.status === 'done')].sort((a, b) =>
+    Number(agentDone(b)) - Number(agentDone(a)) || b.updatedAt - a.updatedAt);
 
-  useAttentionSignals(attention);
+  useAttentionSignals(attention, finished);
 
   const card = (t: Task) => (
     <CardErrorBoundary key={t.id} taskId={t.id}>
@@ -125,8 +129,9 @@ function Board({ project }: { project: Project }) {
       {parked.length > 0 && <Section title="Split into subtasks" count={parked.length}>{parked.map(card)}</Section>}
       {done.length > 0 && (
         <section className="section">
-          <button className="section-toggle" onClick={() => setShowDone((s) => !s)}>
+          <button className="section-toggle" onClick={toggleDone}>
             {showDone ? '▾' : '▸'} Done <span className="count">{done.length}</span>
+            {finished.length > 0 && <span className="count ready">{finished.length} to review</span>}
           </button>
           {showDone && <div className="cards">{done.map(card)}</div>}
         </section>
@@ -302,16 +307,17 @@ function NotifyToggle() {
   return <button className="ghost" onClick={() => Notification.requestPermission().then(setPerm)}>Enable notifications</button>;
 }
 
-/** Tab-title badge plus a desktop notification whenever a task newly needs you. */
-function useAttentionSignals(attention: Task[]) {
+/** Tab-title badge for tasks that need you, plus a desktop notification when one newly needs you or an agent finishes. */
+function useAttentionSignals(attention: Task[], finished: Task[]) {
   const seen = useRef<Set<string> | null>(null);
-  const keys = useMemo(() => attention.map((t) => `${t.id}:${t.updatedAt}`), [attention]);
+  const notify = useMemo(() => [...attention, ...finished], [attention, finished]);
+  const keys = useMemo(() => notify.map((t) => `${t.id}:${t.updatedAt}`), [notify]);
 
   useEffect(() => {
     document.title = attention.length ? `(${attention.length}) Turtle Command Center` : 'Turtle Command Center';
-    const current = new Set(attention.map((t) => String(t.id)));
+    const current = new Set(notify.map((t) => String(t.id)));
     if (seen.current && typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-      for (const t of attention) {
+      for (const t of notify) {
         if (!seen.current.has(String(t.id))) {
           new Notification(`#${t.id} ${t.title}`, {
             body: t.permissions.length ? `Wants to use ${t.permissions[0].toolName}` : t.checkpoint?.summary.slice(0, 140) ?? 'Needs your input',
@@ -322,5 +328,5 @@ function useAttentionSignals(attention: Task[]) {
     }
     seen.current = current;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keys.join()]);
+  }, [keys.join(), attention.length]);
 }

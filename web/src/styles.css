@@ -132,6 +132,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 }
 .section-toggle { background: none; border: none; padding: 0; color: var(--muted); }
 .count { background: var(--surface-2); border-radius: 99px; padding: 1px 8px; margin-left: 4px; font-size: 12px; }
+.count.ready { color: var(--accent); text-transform: none; letter-spacing: 0; }
 .cards { display: grid; gap: 12px; }
 .muted { color: var(--muted); margin: 0; }
 
