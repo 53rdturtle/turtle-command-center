@@ -1,4 +1,4 @@
-import { useState, type ClipboardEvent, type DragEvent } from 'react';
+import { useRef, useState, type ClipboardEvent, type DragEvent } from 'react';
 import { api } from './api.ts';
 
 // Pasted images are saved by the server and referenced in the message text as `[Image: <path>]`,
@@ -18,10 +18,11 @@ const readAsDataUrl = (file: File) =>
     reader.readAsDataURL(file);
   });
 
-/** Paste and drop handlers for a textarea: images are uploaded and their reference inserted at the cursor. */
+/** Paste, drop and file-picker input for a textarea: images are uploaded and their reference inserted at the cursor. */
 export function useImageInput(setText: (update: (text: string) => string) => void) {
   const [uploading, setUploading] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const textarea = useRef<HTMLTextAreaElement>(null);
 
   const add = async (files: File[], el: HTMLTextAreaElement) => {
     setError(null);
@@ -51,7 +52,16 @@ export function useImageInput(setText: (update: (text: string) => string) => voi
   return {
     uploading: uploading > 0,
     error,
+    /** Adds picked files at the textarea's last cursor position. */
+    attach: (files: FileList | null) => {
+      const el = textarea.current;
+      const picked = files ? images(files) : [];
+      if (!el || !picked.length) return;
+      el.focus(); // restores the textarea's selection, so the reference lands where the cursor was
+      add(picked, el);
+    },
     handlers: {
+      ref: textarea,
       onPaste: (e: ClipboardEvent<HTMLTextAreaElement>) => {
         const files = images(e.clipboardData.items);
         if (!files.length) return;
@@ -70,6 +80,27 @@ export function useImageInput(setText: (update: (text: string) => string) => voi
       },
     },
   };
+}
+
+/** A button that opens the file picker, for images that aren't on the clipboard. */
+export function AttachImage({ images }: { images: ReturnType<typeof useImageInput> }) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <button type="button" className="ghost" title="Attach image" aria-label="Attach image" disabled={images.uploading} onClick={() => input.current?.click()}>📎</button>
+      <input
+        ref={input}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        multiple
+        hidden
+        onChange={(e) => {
+          images.attach(e.target.files);
+          e.target.value = ''; // so picking the same file again still fires onChange
+        }}
+      />
+    </>
+  );
 }
 
 /** Thumbnails of the images a draft references, plus upload state. */

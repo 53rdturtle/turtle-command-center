@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { ImageThumbs, useImageInput, withImages } from './images.tsx';
+import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
 import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
@@ -344,6 +344,7 @@ function ReplyBox({ taskId, placeholder = 'Reply in your own words or paste a sc
         onKeyDown={enterToSubmit(send)}
         {...images.handlers}
       />
+      <AttachImage images={images} />
       <button disabled={busy || images.uploading || !text.trim()} onClick={send}>Send</button>
       <ImageThumbs text={text} uploading={images.uploading} error={images.error} />
       {error && <p className="error">{error}</p>}
