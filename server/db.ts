@@ -128,7 +128,9 @@ export interface TaskRow {
   context_tokens: number | null; context_window: number | null;
 }
 export type MergeState = 'queued' | 'merging' | 'resolving';
-export interface MergeFailure { target: string; conflicts: string[]; message: string }
+export type MergeFailureReason = 'dirty' | 'detached' | 'in_progress' | 'conflicts' | 'error';
+/** `reason` and `files` are missing on failures stored before they existed. */
+export interface MergeFailure { target: string; reason?: MergeFailureReason; conflicts: string[]; files?: string[]; message: string }
 export interface AccountRow { id: number; name: string; token: string | null; limited_until: number | null; created_at: number }
 export interface EventRow { id: number; task_id: number; ts: number; kind: string; text: string }
 export interface PermissionRow {

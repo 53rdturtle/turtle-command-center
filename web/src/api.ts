@@ -67,7 +67,15 @@ export interface Account {
   running: number;
 }
 
-export interface MergeFailure { target: string; conflicts: string[]; message: string }
+/** `reason` and `files` are missing on failures stored before they existed. */
+export interface MergeFailure {
+  target: string;
+  reason?: 'dirty' | 'detached' | 'in_progress' | 'conflicts' | 'error';
+  conflicts: string[];
+  /** Modified files, when reason is 'dirty' */
+  files?: string[];
+  message: string;
+}
 
 export interface DiffFile {
   path: string;

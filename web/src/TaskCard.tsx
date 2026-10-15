@@ -377,22 +377,37 @@ function MergeFailureNotice({ taskId, failure }: { taskId: number; failure: Merg
     `Merging into \`${failure.target}\` conflicts in: ${failure.conflicts.join(', ')}. ` +
     `Run \`git merge ${failure.target}\` in your worktree, resolve the conflicts, run any relevant checks, commit, and report back.`));
   const onDismiss = () => run(() => api.dismissMergeFailure(taskId));
+  const dismiss = <button className="option" disabled={busy} onClick={onDismiss}>Dismiss</button>;
+  // Failures stored before `reason` existed only tell conflicts apart by their file list.
+  const reason = failure.reason ?? (failure.conflicts.length ? 'conflicts' : 'error');
   return (
     <div className="merge-failure">
-      {failure.conflicts.length > 0 ? (
+      {reason === 'conflicts' ? (
         <>
           <p><strong>Merge conflicts with {failure.target}</strong>. Nothing was merged, so your checkout is unchanged.</p>
           <ul>{failure.conflicts.map((f) => <li key={f}><code>{f}</code></li>)}</ul>
           <div className="options">
             <button className="option primary" disabled={busy} onClick={askAgent}>Ask the agent to resolve them</button>
-            <button className="option" onClick={onDismiss}>Dismiss</button>
+            {dismiss}
           </div>
+        </>
+      ) : reason === 'dirty' ? (
+        <>
+          <p><strong>Your checkout of {failure.target} has uncommitted changes</strong>, so nothing was merged.
+            Commit or stash them (<code>git stash</code>), then merge again.</p>
+          <ul>{(failure.files ?? []).map((f) => <li key={f}><code>{f}</code></li>)}</ul>
+          <div className="options">{dismiss}</div>
+        </>
+      ) : reason === 'detached' || reason === 'in_progress' ? (
+        <>
+          <p><strong>Couldn't merge.</strong> {failure.message} Nothing was changed.</p>
+          <div className="options">{dismiss}</div>
         </>
       ) : (
         <>
-          <p><strong>Couldn't merge into {failure.target}.</strong></p>
+          <p><strong>Couldn't merge into {failure.target}.</strong> Git reported:</p>
           <pre>{failure.message}</pre>
-          <div className="options"><button className="option" onClick={onDismiss}>Dismiss</button></div>
+          <div className="options">{dismiss}</div>
         </>
       )}
       {error && <p className="error">{error}</p>}

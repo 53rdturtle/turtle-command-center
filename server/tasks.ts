@@ -521,7 +521,7 @@ async function pumpMerges(projectId: number) {
         await attemptMerge(task.id);
       } catch (err: any) {
         const target = (await currentBranch(getProject(projectId)!.path).catch(() => null)) ?? 'HEAD';
-        failMerge(task.id, { target, conflicts: [], message: String(err?.message ?? err) });
+        failMerge(task.id, { target, reason: 'error', conflicts: [], message: String(err?.message ?? err) });
       }
     }
   } finally {
@@ -550,8 +550,9 @@ async function attemptMerge(taskId: number) {
     addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
     return;
   }
-  if (!result.conflicts.length || task.merge_attempts >= MAX_MERGE_ATTEMPTS) {
-    failMerge(taskId, { target: result.target, conflicts: result.conflicts, message: result.message });
+  if (result.reason !== 'conflicts' || task.merge_attempts >= MAX_MERGE_ATTEMPTS) {
+    const { target, reason, conflicts, files, message } = result;
+    failMerge(taskId, { target, reason, conflicts, files, message });
     return;
   }
   updateTask(taskId, { merge_state: 'resolving', merge_attempts: task.merge_attempts + 1 });
