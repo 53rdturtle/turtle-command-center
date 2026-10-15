@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { api, onStream, type Checkpoint, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
+import { agentDone, api, onStream, type Checkpoint, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -35,9 +35,13 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
   const [showTranscript, setShowTranscript] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [showMore, setShowMore] = useState(false);
   const [mergeFailure, setMergeFailure] = useState<Extract<MergeResult, { ok: false }> | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : task.status;
+  // Finished cards keep only the closing actions in view; the rest sit behind "⋯".
+  const finished = agentDone(task) || task.status === 'done';
+  const secondary = !finished || showMore;
   const canMerge = Boolean(task.branch && task.worktree) && !['running', 'queued', 'done'].includes(task.status);
   const merge = () => run(async () => {
     setMergeFailure(null);
@@ -82,15 +86,17 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
       {error && <p className="error">{error}</p>}
 
       <footer className="card-actions">
-        <button className="ghost" onClick={() => setShowTranscript((s) => !s)}>
-          {showTranscript ? 'Hide transcript' : 'Transcript'}
-        </button>
-        {resumeCmd && (
+        {secondary && (
+          <button className="ghost" onClick={() => setShowTranscript((s) => !s)}>
+            {showTranscript ? 'Hide transcript' : 'Transcript'}
+          </button>
+        )}
+        {secondary && resumeCmd && (
           <button className="ghost" disabled={busy} onClick={() => run(() => api.openTerminal(task.id))} title={task.status === 'running' ? 'Stops the agent and continues the session in a new terminal window' : 'Continue the session in a new terminal window'}>
             Open in terminal
           </button>
         )}
-        {resumeCmd && (
+        {secondary && resumeCmd && (
           <button className="ghost" onClick={copyResume} title={resumeCmd}>
             {copied ? 'Copied ✓' : 'Copy resume cmd'}
           </button>
@@ -110,13 +116,18 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
         {task.status !== 'done' && (
           <button className="ghost" disabled={busy} onClick={() => run(() => api.done(task.id))} title="Keep the branch, remove the worktree">Mark done</button>
         )}
-        {confirmDiscard ? (
+        {!secondary ? null : confirmDiscard ? (
           <>
             <button className="danger" disabled={busy} onClick={() => run(() => api.discard(task.id))}>Discard work + branch</button>
             <button className="ghost" onClick={() => setConfirmDiscard(false)}>Cancel</button>
           </>
         ) : (
           <button className="ghost" onClick={() => setConfirmDiscard(true)}>Discard</button>
+        )}
+        {finished && (
+          <button className="ghost" onClick={() => setShowMore((m) => !m)} title={showMore ? 'Fewer actions' : 'Transcript, terminal, discard…'}>
+            {showMore ? '×' : '⋯'}
+          </button>
         )}
       </footer>
 
@@ -177,11 +188,14 @@ function Summary({ checkpoint }: { checkpoint: Checkpoint }) {
 function QuickReply({ task }: { task: Task }) {
   const cp = task.checkpoint!;
   const { busy, error, run } = useAction();
+  const [followUp, setFollowUp] = useState(false);
+  const showReply = !cp.done || followUp;
   return (
     <div>
       {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
       <Summary checkpoint={cp} />
-      {cp.options.length > 0 && (
+      {cp.done && <button className="link" onClick={() => setFollowUp((f) => !f)}>{followUp ? 'Hide follow-up' : 'Follow up…'}</button>}
+      {showReply && cp.options.length > 0 && (
         <div className="options">
           {cp.options.map((o, i) => (
             <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={() => run(() => api.reply(task.id, o.label))}>
@@ -192,7 +206,7 @@ function QuickReply({ task }: { task: Task }) {
         </div>
       )}
       {error && <p className="error">{error}</p>}
-      <ReplyBox taskId={task.id} />
+      {showReply && <ReplyBox taskId={task.id} />}
     </div>
   );
 }
