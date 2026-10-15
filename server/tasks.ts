@@ -11,6 +11,7 @@ import {
 import { CliRunner, type AccountUsage, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { openResumeTerminal, openShellTerminal } from './openTerminal.ts';
 import { findBrowser } from './browser.ts';
+import { cleanupTaskImages, sweepImages } from './images.ts';
 import {
   createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff,
   wasMerged,
@@ -161,11 +162,12 @@ Rules:
 - The summary is a TL;DR for someone glancing at a busy board: 2-3 plain sentences (max 350 characters, no bullets) saying what you found or did and what you need from them. Put evidence, file paths and caveats in details; the user opens it only when they want more.
 - Options are 1-4 concrete next steps the user can pick with one click. Each option's label is sent back to you verbatim as the user's reply, so make it self-contained. Put your recommendation first and end its label with "(Recommended)".
 - You can't ${task.branch ? 'merge your branch, ' : ''}mark the task done or discard it yourself; only the board can. To offer one of those, give the option an action (${task.branch ? '"merge", ' : ''}"done" or "discard") and clicking it runs the board's own button. Never ask the user to type or pick a reply asking you to do one of them.
+- Messages may include screenshots the user pasted, written as \`[Image: <path>]\`. Look at them with the Read tool.
 - Decide small things yourself. Ask before large, risky, or irreversible choices.
 - On your first turn, investigate (read the code, reproduce the problem, check constraints) and report findings plus a proposed plan. Don't make large changes before the user picks a direction, unless the task is trivial.
 - If the task is clearly too big for one session, with parts that can proceed independently in parallel, call propose_split with self-contained subtask prompts instead of report_checkpoint.
 ${testingRule(project)}
-- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board already shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, so a done checkpoint's options are only for optional follow-up work; an empty list is fine.`;
+- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board already shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, so a done checkpoint's options are only for optional follow-up work (don't mark any of them "(Recommended)"); an empty list is fine.`;
 }
 
 /** How to run and look at the agent's own copy of the app, so it can check a change instead of only typechecking it. */
@@ -430,6 +432,7 @@ async function repairWorktrees() {
 
 export async function recoverOnStartup() {
   await repairWorktrees();
+  cleanupImages(sweepImages); // also catches tasks finished before cleanup existed, and abandoned drafts
   // Finished tasks have nothing left to merge; older recovery code could leave their merge flags behind.
   db.prepare(`UPDATE tasks SET merge_state = NULL, merge_queued_at = NULL, merge_failure = NULL
     WHERE status IN ('done', 'discarded') AND (merge_state IS NOT NULL OR merge_failure IS NOT NULL)`).run();
@@ -788,11 +791,21 @@ const isFinished = (t: TaskRow) => t.status === 'done' || t.status === 'discarde
  * again to integrate the pieces. The check runs synchronously around the write, so concurrent calls
  * wake the parent exactly once per batch.
  */
+/** Image cleanup is housekeeping; it must never get in the way of finishing a task. */
+function cleanupImages(fn: () => void) {
+  try {
+    fn();
+  } catch (err) {
+    console.error('[images] cleanup failed:', err);
+  }
+}
+
 function finishTask(taskId: number, fields: Partial<TaskRow>) {
   const wasOpen = !isFinished(getTask(taskId)!);
   updateTask(taskId, fields);
   removeTryData(taskId);
   const task = getTask(taskId)!;
+  if (wasOpen && isFinished(task)) cleanupImages(() => cleanupTaskImages(taskId));
   if (!task.parent_id) return;
   updateTask(task.parent_id, {}); // refresh the parent's subtask progress
   if (!wasOpen) return;

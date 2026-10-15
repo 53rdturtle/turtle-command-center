@@ -1,5 +1,6 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
+import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
 import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
@@ -321,10 +322,12 @@ function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActio
     <div>
       {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
       <Summary checkpoint={cp} />
+      {/* On a finished task the options are extra work the agent could do, so none is highlighted. */}
+      {options.length > 0 && cp.done && <p className="options-label">Optional follow-ups (nothing more is needed):</p>}
       {options.length > 0 && (
-        <div className="options">
+        <div className={cp.done ? 'options follow-ups' : 'options'}>
           {options.map((o, i) => (
-            <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={o.onClick!}>
+            <button key={i} className={i === 0 && !cp.done ? 'option primary' : 'option'} disabled={busy} onClick={o.onClick!}>
               <span>{o.label}</span>
               {o.detail && <small>{o.detail}</small>}
             </button>
@@ -353,10 +356,11 @@ export function enterToSubmit(submit: () => void) {
   };
 }
 
-function ReplyBox({ taskId, placeholder = 'Reply in your own words…  (Enter to send, Ctrl+Enter for new line)' }: { taskId: number; placeholder?: string }) {
+function ReplyBox({ taskId, placeholder = 'Reply in your own words or paste a screenshot…  (Enter to send, Ctrl+Enter for new line)' }: { taskId: number; placeholder?: string }) {
   const [text, setText] = useState('');
   const { busy, error, run } = useAction();
-  const send = () => text.trim() && run(async () => {
+  const images = useImageInput(setText);
+  const send = () => text.trim() && !images.uploading && run(async () => {
     await api.reply(taskId, text);
     setText('');
   });
@@ -368,8 +372,11 @@ function ReplyBox({ taskId, placeholder = 'Reply in your own words…  (Enter to
         placeholder={placeholder}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={enterToSubmit(send)}
+        {...images.handlers}
       />
-      <button disabled={busy || !text.trim()} onClick={send}>Send</button>
+      <AttachImage images={images} />
+      <button disabled={busy || images.uploading || !text.trim()} onClick={send}>Send</button>
+      <ImageThumbs text={text} uploading={images.uploading} error={images.error} />
       {error && <p className="error">{error}</p>}
     </div>
   );
@@ -497,7 +504,7 @@ function Transcript({ taskId }: { taskId: number }) {
       {events.map((e) => (
         <div key={e.id} className={`ev ev-${e.kind}`}>
           <span className="ev-kind">{e.kind}</span>
-          {e.kind === 'tool' ? <code>{e.text}</code> : <div className="md"><Markdown>{e.text}</Markdown></div>}
+          {e.kind === 'tool' ? <code>{e.text}</code> : <div className="md"><Markdown>{withImages(e.text)}</Markdown></div>}
         </div>
       ))}
     </div>

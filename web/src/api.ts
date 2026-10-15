@@ -135,6 +135,7 @@ export const api = {
   boardVersion: () => call<BoardVersion>('GET', '/api/board-version'),
   updateBoard: () => call('POST', '/api/board-update'),
   projects: () => call<Project[]>('GET', '/api/projects'),
+  uploadImage: (dataUrl: string) => call<{ path: string; name: string }>('POST', '/api/images', { dataUrl }),
   pickFolder: () => call<{ path: string | null }>('POST', '/api/pick-folder').then((r) => r.path),
   addProject: (p: { name: string; path: string; defaultModel: string; permissionMode: string }) =>
     call<Project>('POST', '/api/projects', p),
@@ -170,7 +171,7 @@ export const api = {
 export type StreamMessage =
   | { type: 'task'; task: Task }
   | { type: 'event'; event: TaskEvent }
-  | { type: 'status'; running: number; maxConcurrent: number; usage: (AccountUsage & { account: string }) | null };
+  | { type: 'status'; running: number; maxConcurrent: number; accounts: Account[] };
 
 type Handler = (m: StreamMessage) => void;
 const handlers = new Set<Handler>();
