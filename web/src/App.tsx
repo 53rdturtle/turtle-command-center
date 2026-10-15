@@ -87,11 +87,10 @@ function Board({ project }: { project: Project }) {
     api.tasks(project.slug).then((list) => setTasks(new Map(list.map((t) => [t.id, t]))));
     return onStream((m) => {
       if (m.type === 'task' && m.task.projectSlug === project.slug) {
-        setTasks((prev) => new Map(prev).set(m.task.id, m.task));
-      } else if (m.type === 'removed') {
         setTasks((prev) => {
           const next = new Map(prev);
-          next.delete(m.id);
+          if (m.task.status === 'discarded') next.delete(m.task.id);
+          else next.set(m.task.id, m.task);
           return next;
         });
       }

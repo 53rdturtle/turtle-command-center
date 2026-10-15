@@ -11,6 +11,7 @@ const STATUS_LABEL: Record<Task['status'], string> = {
   limited: 'Usage limit',
   failed: 'Failed',
   done: 'Done',
+  discarded: 'Discarded',
 };
 
 function useAction() {

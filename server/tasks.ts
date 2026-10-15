@@ -1,16 +1,24 @@
 import { randomUUID } from 'node:crypto';
-import { LIMIT_RETRY_MS, MAX_CONCURRENT, PORT } from './config.ts';
+import { LIMIT_RETRY_MS, MAX_CONCURRENT } from './config.ts';
 import {
-  addEvent, db, getProject, getTask, lastEvent, updateTask,
-  type Checkpoint, type ProjectRow, type SplitProposal, type TaskRow,
+  addEvent, db, DB_PATH, getPermission, getProject, getTask, lastEvent, pendingPermissions,
+  setRunOffset, tasksWithStatus, updateTask,
+  type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
-import { CliRunner, type AgentRunner, type RunHandle } from './runner.ts';
+import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { createWorktree, discardWorktree, mergeTaskBranch, saveAndRemoveWorktree } from './worktree.ts';
 
+/**
+ * Agent runs are detached processes and the database is the source of truth, so this server can
+ * restart at any time: on startup it re-attaches to runs that are still going.
+ */
+
 const runner: AgentRunner = new CliRunner();
-const running = new Map<number, RunHandle>();
+const attached = new Map<number, { detach(): void }>();
 
 // ---------- live updates ----------
+// Agent-side MCP processes write to the database directly, so changes are picked up by polling
+// `tasks.rev` and `events.id` rather than emitted at each write site.
 
 type Listener = (msg: unknown) => void;
 const listeners = new Set<Listener>();
@@ -18,37 +26,28 @@ export function subscribe(fn: Listener) {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
-const broadcast = (msg: unknown) => listeners.forEach((fn) => fn(msg));
 
-function emitTask(id: number) {
-  const task = getTask(id);
-  if (task) broadcast({ type: 'task', task: toDto(task) });
-}
-function emitEvent(taskId: number, kind: string, text: string) {
-  const event = addEvent(taskId, kind, text);
-  broadcast({ type: 'event', event });
-}
+let lastRev = (db.prepare('SELECT COALESCE(MAX(rev), 0) AS r FROM tasks').get() as { r: number }).r;
+let lastEventId = (db.prepare('SELECT COALESCE(MAX(id), 0) AS i FROM events').get() as { i: number }).i;
+
+setInterval(() => {
+  const tasks = db.prepare('SELECT * FROM tasks WHERE rev > ? ORDER BY rev').all(lastRev) as unknown as TaskRow[];
+  const events = db.prepare('SELECT * FROM events WHERE id > ? ORDER BY id').all(lastEventId) as unknown as EventRow[];
+  for (const event of events) {
+    lastEventId = event.id;
+    listeners.forEach((fn) => fn({ type: 'event', event }));
+  }
+  for (const task of tasks) {
+    lastRev = Math.max(lastRev, task.rev);
+    const dto = toDto(task);
+    listeners.forEach((fn) => fn({ type: 'task', task: dto }));
+  }
+}, 250);
 
 // ---------- permissions ----------
+// The agent's MCP process inserts requests and polls for the answer; we only record decisions.
 
-export interface PermissionRequest {
-  id: string;
-  taskId: number;
-  toolName: string;
-  input: Record<string, unknown>;
-}
-interface PermissionDecision {
-  behavior: 'allow' | 'deny';
-  updatedInput?: Record<string, unknown>;
-  message?: string;
-}
-const pendingPermissions = new Map<string, PermissionRequest & { resolve: (d: PermissionDecision) => void }>();
-
-const READ_ONLY_TOOLS = new Set([
-  'Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'TodoWrite', 'WebSearch', 'WebFetch', 'Task', 'Agent',
-]);
-
-/** Key used for "always allow": Bash rules are scoped to the command's first word. */
+/** Same rule as allowKey in mcp-stdio.mjs: Bash rules are scoped to the command's first word. */
 function allowKey(toolName: string, input: Record<string, unknown>) {
   if (toolName === 'Bash' && typeof input.command === 'string') {
     return `Bash:${input.command.trim().split(/\s+/)[0]}`;
@@ -56,45 +55,24 @@ function allowKey(toolName: string, input: Record<string, unknown>) {
   return toolName;
 }
 
-export function requestPermission(taskId: number, toolName: string, input: Record<string, unknown>) {
-  const task = getTask(taskId);
-  const project = task && getProject(task.project_id);
-  const alwaysAllow: string[] = project ? JSON.parse(project.always_allow) : [];
-  if (READ_ONLY_TOOLS.has(toolName) || toolName.startsWith('mcp__tcc__') || alwaysAllow.includes(allowKey(toolName, input))) {
-    return Promise.resolve<PermissionDecision>({ behavior: 'allow', updatedInput: input });
-  }
-  return new Promise<PermissionDecision>((resolve) => {
-    const id = randomUUID();
-    pendingPermissions.set(id, { id, taskId, toolName, input, resolve });
-    emitTask(taskId);
-  });
-}
-
 export function answerPermission(id: string, decision: 'allow' | 'always' | 'deny', message?: string) {
-  const req = pendingPermissions.get(id);
-  if (!req) return false;
-  pendingPermissions.delete(id);
+  const req = getPermission(id);
+  if (!req || req.status !== 'pending') return false;
   if (decision === 'always') {
-    const task = getTask(req.taskId)!;
+    const task = getTask(req.task_id)!;
     const project = getProject(task.project_id)!;
-    const list = new Set<string>(JSON.parse(project.always_allow));
-    list.add(allowKey(req.toolName, req.input));
-    db.prepare('UPDATE projects SET always_allow = ? WHERE id = ?').run(JSON.stringify([...list]), project.id);
+    const rules = new Set<string>(JSON.parse(project.always_allow));
+    rules.add(allowKey(req.tool_name, JSON.parse(req.input)));
+    db.prepare('UPDATE projects SET always_allow = ? WHERE id = ?').run(JSON.stringify([...rules]), project.id);
   }
-  req.resolve(decision === 'deny'
-    ? { behavior: 'deny', message: message || 'The user denied this action.' }
-    : { behavior: 'allow', updatedInput: req.input });
-  emitTask(req.taskId);
+  db.prepare(`UPDATE permissions SET status = ?, message = ? WHERE id = ? AND status = 'pending'`)
+    .run(decision, message ?? null, id);
+  updateTask(req.task_id, {});
   return true;
 }
 
-function denyAllFor(taskId: number) {
-  for (const [id, req] of pendingPermissions) {
-    if (req.taskId === taskId) {
-      pendingPermissions.delete(id);
-      req.resolve({ behavior: 'deny', message: 'Task was stopped.' });
-    }
-  }
+function denyPending(taskId: number, message: string) {
+  db.prepare(`UPDATE permissions SET status = 'deny', message = ? WHERE task_id = ? AND status = 'pending'`).run(message, taskId);
 }
 
 // ---------- DTO ----------
@@ -119,9 +97,7 @@ export function toDto(t: TaskRow) {
     retryAt: t.retry_at,
     costUsd: t.cost_usd,
     lastActivity: t.status === 'running' ? (lastEvent(t.id)?.text ?? null) : null,
-    permissions: [...pendingPermissions.values()]
-      .filter((p) => p.taskId === t.id)
-      .map(({ id, toolName, input }) => ({ id, toolName, input })),
+    permissions: pendingPermissions(t.id).map((p) => ({ id: p.id, toolName: p.tool_name, input: JSON.parse(p.input) })),
     createdAt: t.created_at,
     updatedAt: t.updated_at,
   };
@@ -158,23 +134,24 @@ function initialPrompt(task: TaskRow) {
 
 // ---------- scheduler ----------
 
+const runningCount = () => (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'running'`).get() as { n: number }).n;
+export { runningCount };
+
 /** Puts a prompt in line for the task's session; multiple queued prompts are combined. */
 function enqueue(taskId: number, prompt: string) {
   const task = getTask(taskId)!;
   const combined = task.status === 'queued' && task.pending_prompt ? `${task.pending_prompt}\n\n${prompt}` : prompt;
   updateTask(taskId, { status: 'queued', pending_prompt: combined, error: null, retry_at: null });
-  emitTask(taskId);
   pump();
 }
 
 function pump() {
-  while (running.size < MAX_CONCURRENT) {
-    const next = db.prepare(`SELECT * FROM tasks WHERE status = 'queued' ORDER BY updated_at LIMIT 1`).get() as TaskRow | undefined;
+  while (runningCount() < MAX_CONCURRENT) {
+    const next = tasksWithStatus('queued')[0];
     if (!next) return;
+    updateTask(next.id, { status: 'running', checkpoint: null, split: null, error: null });
     start(next).catch((err) => {
-      running.delete(next.id);
-      updateTask(next.id, { status: 'failed', error: String(err?.message ?? err) });
-      emitTask(next.id);
+      updateTask(next.id, { status: 'failed', error: String(err?.message ?? err), run_ref: null });
       pump();
     });
   }
@@ -182,110 +159,104 @@ function pump() {
 
 async function start(task: TaskRow) {
   const project = getProject(task.project_id)!;
-  updateTask(task.id, { status: 'running', checkpoint: null, split: null });
-  running.set(task.id, { done: new Promise(() => {}), stop: () => {} }); // reserve the slot while the worktree is created
-
   if (!task.worktree) {
     const parent = task.parent_id ? getTask(task.parent_id) : undefined;
     const wt = await createWorktree(project.path, project.slug, task.id, task.title, parent?.branch ?? 'HEAD');
     updateTask(task.id, { worktree: wt.path, branch: wt.branch });
   }
   const fresh = getTask(task.id)!;
+  if (fresh.status !== 'running') return; // stopped while the worktree was being created
   const prompt = fresh.pending_prompt ?? initialPrompt(fresh);
   const sessionId = fresh.session_id ?? randomUUID();
-  updateTask(task.id, { session_id: sessionId, pending_prompt: null });
-  emitEvent(task.id, 'user', prompt);
-  emitTask(task.id);
 
-  const handle = runner.run(
-    {
-      taskId: task.id,
-      cwd: fresh.worktree!,
-      prompt,
-      sessionId,
-      resume: Boolean(fresh.started),
-      model: fresh.model,
-      permissionMode: project.permission_mode,
-      mcpUrl: `http://127.0.0.1:${PORT}/mcp/${task.id}`,
-      systemPrompt: systemPrompt(fresh),
-    },
-    (e) => {
-      if (e.kind === 'session') updateTask(task.id, { session_id: e.sessionId, started: 1 });
-      else emitEvent(task.id, e.kind, e.text);
-      emitTask(task.id);
-    },
-  );
-  running.set(task.id, handle);
-
-  const result = await handle.done;
-  running.delete(task.id);
-  denyAllFor(task.id);
-  finish(task.id, prompt, result);
-  pump();
+  const ref = runner.start({
+    taskId: task.id,
+    cwd: fresh.worktree!,
+    prompt,
+    sessionId,
+    resume: Boolean(fresh.started),
+    model: fresh.model,
+    permissionMode: project.permission_mode,
+    dbPath: DB_PATH,
+    systemPrompt: systemPrompt(fresh),
+  });
+  updateTask(task.id, { session_id: sessionId, pending_prompt: null, run_prompt: prompt, run_ref: JSON.stringify(ref), run_offset: 0 });
+  addEvent(task.id, 'user', prompt);
+  attach(task.id);
 }
 
-function finish(taskId: number, prompt: string, result: Awaited<RunHandle['done']>) {
+/** Follows a run's output until it exits. Safe to call again after a server restart. */
+function attach(taskId: number) {
   const task = getTask(taskId)!;
-  const cost = task.cost_usd + result.costUsd;
-  if (result.resultText) emitEvent(taskId, result.isError ? 'error' : 'result', result.resultText);
+  const ref = JSON.parse(task.run_ref!) as RunRef;
+  attached.get(taskId)?.detach();
+  attached.set(taskId, runner.attach(ref, task.run_offset, {
+    onEvent: (e) => {
+      if (e.kind === 'session') updateTask(taskId, { session_id: e.sessionId, started: 1 });
+      else {
+        addEvent(taskId, e.kind, e.text);
+        updateTask(taskId, {}); // refresh the card's activity line
+      }
+    },
+    onProgress: (offset) => setRunOffset(taskId, offset),
+    onExit: (result) => {
+      attached.delete(taskId);
+      finish(taskId, result);
+      pump();
+    },
+  }));
+}
+
+function finish(taskId: number, result: RunResult) {
+  const task = getTask(taskId)!;
+  denyPending(taskId, 'The agent run ended.');
+  const base = { cost_usd: task.cost_usd + result.costUsd, run_ref: null };
+  if (result.resultText && !(task.status !== 'running' && result.interrupted)) {
+    addEvent(taskId, result.isError ? 'error' : 'result', result.resultText);
+  }
 
   if (task.status !== 'running') {
     // Stopped by the user; stop() already set the final status.
-    updateTask(taskId, { cost_usd: cost, started: result.sessionId ? 1 : task.started });
+    updateTask(taskId, base);
   } else if (result.usageLimited) {
     updateTask(taskId, {
+      ...base,
       status: 'limited',
-      cost_usd: cost,
       retry_at: Date.now() + LIMIT_RETRY_MS,
-      pending_prompt: task.started ? 'You were interrupted by a usage limit. Continue where you left off.' : prompt,
+      pending_prompt: task.started ? 'You were interrupted by a usage limit. Continue where you left off.' : task.run_prompt,
       error: result.resultText,
     });
   } else if (result.isError) {
-    updateTask(taskId, { status: 'failed', cost_usd: cost, error: result.resultText });
+    updateTask(taskId, { ...base, status: 'failed', error: result.resultText });
   } else if (task.split) {
-    updateTask(taskId, { status: 'split_proposed', cost_usd: cost });
+    updateTask(taskId, { ...base, status: 'split_proposed' });
   } else if (task.checkpoint) {
-    updateTask(taskId, { status: 'needs_input', cost_usd: cost });
+    updateTask(taskId, { ...base, status: 'needs_input' });
   } else {
     // The agent ended its turn without reporting; surface its final message instead.
     const checkpoint: Checkpoint = { summary: result.resultText || '_The agent ended its turn without a summary._', options: [] };
-    updateTask(taskId, { status: 'needs_input', cost_usd: cost, checkpoint: JSON.stringify(checkpoint) });
+    updateTask(taskId, { ...base, status: 'needs_input', checkpoint: JSON.stringify(checkpoint) });
   }
-  emitTask(taskId);
 }
 
 // Retry tasks whose usage-limit cool-down has passed.
 setInterval(() => {
   const due = db.prepare(`SELECT id FROM tasks WHERE status = 'limited' AND retry_at <= ?`).all(Date.now()) as { id: number }[];
-  for (const { id } of due) {
-    updateTask(id, { status: 'queued', retry_at: null });
-    emitTask(id);
-  }
+  for (const { id } of due) updateTask(id, { status: 'queued', retry_at: null });
   if (due.length) pump();
 }, 60_000);
 
-/** Sessions that were running when the server stopped get resumed. */
+/** Re-attaches to runs that kept going while the server was down. */
 export function recoverOnStartup() {
-  const stale = db.prepare(`SELECT * FROM tasks WHERE status = 'running'`).all() as unknown as TaskRow[];
-  for (const t of stale) {
-    updateTask(t.id, {
-      status: 'queued',
-      pending_prompt: t.started ? 'The command center restarted while you were working. Continue where you left off.' : t.pending_prompt,
-    });
+  for (const t of tasksWithStatus('running')) {
+    if (t.run_ref) {
+      attach(t.id); // if the process has since exited, attach finishes it from its log
+    } else {
+      // The server stopped between claiming the task and launching the agent.
+      updateTask(t.id, { status: 'queued' });
+    }
   }
   pump();
-}
-
-// ---------- tool callbacks from the agent (via MCP) ----------
-
-export function recordCheckpoint(taskId: number, cp: Checkpoint) {
-  updateTask(taskId, { checkpoint: JSON.stringify(cp) });
-  emitEvent(taskId, 'checkpoint', cp.summary);
-}
-
-export function recordSplit(taskId: number, split: SplitProposal) {
-  updateTask(taskId, { split: JSON.stringify(split) });
-  emitEvent(taskId, 'split', `${split.rationale}\n\n${split.subtasks.map((s) => `- ${s.title}`).join('\n')}`);
 }
 
 // ---------- user actions ----------
@@ -296,7 +267,7 @@ export function createTask(project: ProjectRow, input: { title: string; descript
     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`)
     .run(project.id, input.parentId ?? null, input.title, input.description ?? '', input.model || project.default_model, now, now);
   const id = Number(r.lastInsertRowid);
-  emitTask(id);
+  updateTask(id, {});
   pump();
   return getTask(id)!;
 }
@@ -313,43 +284,39 @@ export function approveSplit(taskId: number, subtasks: { title: string; prompt: 
   if (!task) throw new Error('Task not found');
   const project = getProject(task.project_id)!;
   updateTask(taskId, { status: 'split' });
-  emitEvent(taskId, 'user', `Approved split into ${subtasks.length} subtasks.`);
-  emitTask(taskId);
+  addEvent(taskId, 'user', `Approved split into ${subtasks.length} subtasks.`);
   return subtasks.map((s) =>
     createTask(project, { title: s.title, description: s.prompt, model: task.model, parentId: taskId }));
 }
 
-export function stop(taskId: number) {
+export async function stop(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
   const checkpoint: Checkpoint = { summary: 'Stopped by you. Reply to continue the session.', options: [{ label: 'Continue where you left off.' }] };
   updateTask(taskId, { status: 'needs_input', checkpoint: JSON.stringify(checkpoint), pending_prompt: null, retry_at: null });
-  denyAllFor(taskId);
-  running.get(taskId)?.stop();
-  emitTask(taskId);
+  denyPending(taskId, 'Task was stopped.');
+  if (task.run_ref) await runner.stop(JSON.parse(task.run_ref) as RunRef);
 }
 
 export async function markDone(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
-  if (running.has(taskId)) stop(taskId);
+  if (task.status === 'running') await stop(taskId);
   const project = getProject(task.project_id)!;
   if (task.branch && task.worktree) await saveAndRemoveWorktree(project.path, task.worktree, taskId);
   updateTask(taskId, { status: 'done', worktree: task.branch ? null : task.worktree });
-  emitTask(taskId);
 }
 
 export async function merge(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
   if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
-  if (running.has(taskId)) throw new Error('Task is running; wait for its checkpoint or stop it first');
+  if (task.status === 'running') throw new Error('Task is running; wait for its checkpoint or stop it first');
   const project = getProject(task.project_id)!;
   const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, `Merge task #${taskId}: ${task.title}`);
   if (result.ok) {
     updateTask(taskId, { status: 'done', worktree: null, branch: null });
-    emitEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
-    emitTask(taskId);
+    addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
   }
   return result;
 }
@@ -357,17 +324,14 @@ export async function merge(taskId: number) {
 export async function discard(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
-  if (running.has(taskId)) stop(taskId);
+  if (task.status === 'running') await stop(taskId);
   const project = getProject(task.project_id)!;
   if (task.branch && task.worktree) await discardWorktree(project.path, task.worktree, task.branch);
   updateTask(taskId, { status: 'discarded', worktree: null });
-  broadcast({ type: 'removed', id: taskId });
 }
 
 export function retry(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
-  enqueue(taskId, task.pending_prompt ?? (task.started ? 'Please try again.' : initialPrompt(task)));
+  enqueue(taskId, task.pending_prompt ?? (task.started ? 'Your previous run ended unexpectedly. Continue where you left off.' : initialPrompt(task)));
 }
-
-export const runningCount = () => running.size;

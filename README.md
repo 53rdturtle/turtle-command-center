@@ -31,12 +31,19 @@ Requires the `claude` CLI, logged in (`claude login`). Sessions run on your Clau
 
 ## How it works
 
-- `server/runner.ts` runs `claude -p --output-format stream-json`, one process per agent turn, resuming the
-  same session id each time. `AgentRunner` is the seam for a future cloud/SDK runner.
-- `server/mcp.ts` is a small MCP server at `/mcp/:taskId` that every session connects to. It provides
-  `report_checkpoint`, `propose_split`, and `permission_prompt` (used via `--permission-prompt-tool`).
-- `server/tasks.ts` has the scheduler, task lifecycle, and live updates (SSE at `/api/stream`).
-- **Merge into <branch>** merges the task branch (`--no-ff`) into whatever your main checkout has checked out, then removes
+The server can restart at any time (`npm run dev` is safe to use while agents work): agents and the board
+only share the SQLite database and log files.
+
+- `server/runner.ts` starts each agent turn as a **detached** `claude -p --output-format stream-json` process writing
+  to a log file in `~/.turtle-cc/runs`, and follows that log. After a restart the server re-attaches from the last
+  processed byte offset; runs that finished while it was down are completed from their logs. `AgentRunner` is the
+  seam for a future cloud/SDK runner.
+- `server/mcp-stdio.mjs` provides the agent's command-center tools (`report_checkpoint`, `propose_split`,
+  `permission_prompt`). Claude Code launches it per session, so it lives and dies with the session. It writes
+  straight to the database; permission requests wait for your answer there, so they survive server restarts.
+- `server/tasks.ts` has the scheduler and task lifecycle, and streams changes to the UI (SSE at `/api/stream`)
+  by polling the database's `rev` counter.
+- **Merge into &lt;branch&gt;** merges the task branch (`--no-ff`) into whatever your main checkout has checked out, then removes
   the worktree and branch. On conflicts the merge is aborted (your checkout is untouched) and you can ask the agent to resolve them.
 - **Mark done** commits leftover changes and removes the worktree but keeps the `tcc/...` branch.
   **Discard** deletes the worktree and the branch.

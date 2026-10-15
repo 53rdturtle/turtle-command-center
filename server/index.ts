@@ -7,7 +7,6 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { MAX_CONCURRENT, PORT } from './config.ts';
 import { db, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
-import { mcpHandler } from './mcp.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
   answerPermission, approveSplit, createTask, discard, markDone, recoverOnStartup,
@@ -90,7 +89,7 @@ app.post('/api/tasks/:id/split/approve', async (c) => {
   return c.json(approveSplit(taskId(c), subtasks).map(toDto));
 });
 
-app.post('/api/tasks/:id/stop', (c) => (stop(taskId(c)), c.json({ ok: true })));
+app.post('/api/tasks/:id/stop', async (c) => (await stop(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/retry', (c) => (retry(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/done', async (c) => (await markDone(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/discard', async (c) => (await discard(taskId(c)), c.json({ ok: true })));
@@ -118,10 +117,6 @@ app.get('/api/stream', (c) =>
     }
   }));
 
-// ---------- MCP endpoint for agent sessions ----------
-
-app.post('/mcp/:taskId', mcpHandler);
-app.get('/mcp/:taskId', (c) => c.body(null, 405));
 
 // ---------- built web UI (production) ----------
 
@@ -131,12 +126,8 @@ if (existsSync(dist)) {
   app.get('*', async (c) => c.html(await readFile(resolve(dist, 'index.html'), 'utf8')));
 }
 
-const server = serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, () => {
+serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, () => {
   console.log(`🐢 Turtle Command Center API on http://localhost:${PORT}`);
   recoverOnStartup();
 });
-// Permission prompts hold an MCP request open until the user answers, so disable request timeouts.
-const httpServer = server as unknown as { requestTimeout: number; headersTimeout: number };
-httpServer.requestTimeout = 0;
-httpServer.headersTimeout = 0;
 

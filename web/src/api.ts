@@ -6,7 +6,7 @@ export interface Permission { id: string; toolName: string; input: Record<string
 
 export type Status =
   | 'queued' | 'running' | 'needs_input' | 'split_proposed' | 'split'
-  | 'limited' | 'failed' | 'done';
+  | 'limited' | 'failed' | 'done' | 'discarded';
 
 export interface Task {
   id: number;
@@ -83,7 +83,6 @@ export const api = {
 
 export type StreamMessage =
   | { type: 'task'; task: Task }
-  | { type: 'removed'; id: number }
   | { type: 'event'; event: TaskEvent }
   | { type: 'status'; running: number; maxConcurrent: number };
 
