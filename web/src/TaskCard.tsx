@@ -1,6 +1,7 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
+import { ago, elapsed, useNow } from './time.ts';
 import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
@@ -59,6 +60,17 @@ function useMergeable(task: Task, targetBranch: string | null) {
 
 type CardProps = { task: Task; parent?: Task; children: Task[]; targetBranch: string | null; defaultModel: string; tryCommand?: string };
 
+/** How long since the card last changed: how long it has waited on you, or when a running agent last did something. */
+function CardAge({ task }: { task: Task }) {
+  const now = useNow();
+  const waiting = task.permissions.length > 0 || task.status === 'needs_input' || task.status === 'split_proposed';
+  const label =
+    task.status === 'running' ? `active ${ago(task.updatedAt, now)}`
+    : waiting ? `waiting ${elapsed(task.updatedAt, now)}`
+    : ago(task.updatedAt, now);
+  return <span className="card-age muted" title={new Date(task.updatedAt).toLocaleString()}>{label}</span>;
+}
+
 export function TaskCard({ task, parent, children, targetBranch, defaultModel, tryCommand = '' }: CardProps) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [showChanges, setShowChanges] = useState(false);
@@ -114,10 +126,13 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
           <span className="task-id" title={info || undefined}>#{task.id}</span>
           <h3>{task.title}</h3>
         </div>
-        <span className={`pill pill-${status}`}>
+        <div className="card-status">
+          <CardAge task={task} />
+          <span className={`pill pill-${status}`}>
           {(status === 'running' || task.mergeState === 'merging') && <span className="spinner" />}
-          {task.permissions.length ? 'Permission' : task.mergeState ? MERGE_LABEL[task.mergeState] : STATUS_LABEL[task.status]}
-        </span>
+            {task.permissions.length ? 'Permission' : task.mergeState ? MERGE_LABEL[task.mergeState] : STATUS_LABEL[task.status]}
+          </span>
+        </div>
       </header>
 
       <div className="meta">
