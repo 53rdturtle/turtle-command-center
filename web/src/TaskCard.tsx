@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import { api, onStream, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
 
@@ -295,7 +295,10 @@ function Transcript({ taskId }: { taskId: number }) {
       off();
     };
   }, [taskId]);
-  useEffect(() => end.current?.scrollIntoView({ block: 'nearest' }), [events.length]);
+  // Braces matter: newer browsers return a Promise from scrollIntoView, which React would treat as a cleanup function.
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: 'nearest' });
+  }, [events.length]);
 
   return (
     <div className="transcript">
@@ -312,3 +315,20 @@ function Transcript({ taskId }: { taskId: number }) {
 }
 
 const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n) + '…' : s);
+
+/** Keeps a rendering bug in one card from blanking the whole board. */
+export class CardErrorBoundary extends Component<{ taskId: number; children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <article className="card status-failed">
+        <p className="error">Card #{this.props.taskId} failed to render: {this.state.error.message}</p>
+        <button className="ghost small" onClick={() => this.setState({ error: null })}>Try again</button>
+      </article>
+    );
+  }
+}

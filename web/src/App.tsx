@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Project, type Task } from './api.ts';
-import { TaskCard } from './TaskCard.tsx';
+import { CardErrorBoundary, TaskCard } from './TaskCard.tsx';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
 
@@ -107,13 +107,14 @@ function Board({ project }: { project: Project }) {
   useAttentionSignals(attention);
 
   const card = (t: Task) => (
-    <TaskCard
-      key={t.id}
-      task={t}
-      parent={t.parentId ? tasks.get(t.parentId) : undefined}
-      children={all.filter((c) => c.parentId === t.id)}
-      targetBranch={project.currentBranch}
-    />
+    <CardErrorBoundary key={t.id} taskId={t.id}>
+      <TaskCard
+        task={t}
+        parent={t.parentId ? tasks.get(t.parentId) : undefined}
+        children={all.filter((c) => c.parentId === t.id)}
+        targetBranch={project.currentBranch}
+      />
+    </CardErrorBoundary>
   );
 
   return (
