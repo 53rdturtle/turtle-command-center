@@ -1,7 +1,7 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
-import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
+import { api, MODELS, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -122,7 +122,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
 
       <div className="meta">
         {parent && <span className="chip">↳ from #{parent.id} {parent.title}</span>}
-        {task.model !== defaultModel && <span className="chip" title="Differs from the project's default model">{task.model}</span>}
+        <span className={task.model === defaultModel ? 'chip chip-faint' : 'chip'} title={task.model === defaultModel ? 'Model (project default)' : "Model (differs from the project's default)"}>{task.model}</span>
         {hasDiff && diff.data && (
           <button className="chip chip-button mono" onClick={() => setShowChanges((s) => !s)} title={`${showChanges ? 'Hide' : 'Show'} changes relative to ${diff.data.target}`}>
             {showChanges ? '▾' : '▸'} <span className="add">+{diff.data.additions}</span> <span className="del">−{diff.data.deletions}</span> · {diff.data.files.length} file{diff.data.files.length === 1 ? '' : 's'}
@@ -280,7 +280,7 @@ function Body({ task, children, boardAction }: { task: Task; children: Task[]; b
           <ul className="subtask-status">
             {children.map((c) => <li key={c.id}>#{c.id} {c.title} <span className={`pill pill-${c.status} small`}>{STATUS_LABEL[c.status]}</span></li>)}
           </ul>
-          <ReplyBox taskId={task.id} placeholder="Message the parent session (e.g. 'Subtasks are done, integrate and verify')…" />
+          <ReplyBox task={task} placeholder="Message the parent session (e.g. 'Subtasks are done, integrate and verify')…" />
         </div>
       );
     case 'done':
@@ -315,8 +315,10 @@ function Summary({ checkpoint }: { checkpoint: Checkpoint }) {
 function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActionFn }) {
   const cp = task.checkpoint!;
   const { busy, error, run } = useAction();
+  // One model choice covers both the option buttons and the typed reply.
+  const [model, setModel] = useState(task.model);
   const options = cp.options
-    .map((o) => ({ ...o, onClick: o.action ? boardAction(o.action) : () => run(() => api.reply(task.id, o.label)) }))
+    .map((o) => ({ ...o, onClick: o.action ? boardAction(o.action) : () => run(() => api.reply(task.id, o.label, model)) }))
     .filter((o) => o.onClick);
   return (
     <div>
@@ -335,7 +337,7 @@ function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActio
         </div>
       )}
       {error && <p className="error">{error}</p>}
-      <ReplyBox taskId={task.id} />
+      <ReplyBox task={task} model={model} setModel={setModel} />
     </div>
   );
 }
@@ -356,12 +358,16 @@ export function enterToSubmit(submit: () => void) {
   };
 }
 
-function ReplyBox({ taskId, placeholder = 'Reply in your own words or paste a screenshot…  (Enter to send, Ctrl+Enter for new line)' }: { taskId: number; placeholder?: string }) {
+type ReplyBoxProps = { task: Task; placeholder?: string; model?: string; setModel?: (m: string) => void };
+
+function ReplyBox({ task, placeholder = 'Reply in your own words or paste a screenshot…  (Enter to send, Ctrl+Enter for new line)', ...lifted }: ReplyBoxProps) {
   const [text, setText] = useState('');
+  const [ownModel, setOwnModel] = useState(task.model);
+  const [model, setModel] = lifted.setModel ? [lifted.model!, lifted.setModel] : [ownModel, setOwnModel];
   const { busy, error, run } = useAction();
   const images = useImageInput(setText);
   const send = () => text.trim() && !images.uploading && run(async () => {
-    await api.reply(taskId, text);
+    await api.reply(task.id, text, model);
     setText('');
   });
   return (
@@ -375,6 +381,10 @@ function ReplyBox({ taskId, placeholder = 'Reply in your own words or paste a sc
         {...images.handlers}
       />
       <AttachImage images={images} />
+      <select className="model-select" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model for the next run"
+        title={model === task.model ? 'Model for the next run' : `Switches this task from ${task.model} to ${model} when you send`}>
+        {MODELS.map((m) => <option key={m}>{m}</option>)}
+      </select>
       <button disabled={busy || images.uploading || !text.trim()} onClick={send}>Send</button>
       <ImageThumbs text={text} uploading={images.uploading} error={images.error} />
       {error && <p className="error">{error}</p>}

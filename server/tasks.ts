@@ -469,11 +469,16 @@ export function createTask(project: ProjectRow, input: { title: string; descript
   return getTask(id)!;
 }
 
-export function reply(taskId: number, text: string) {
+/** Models a reply may switch the task to; `claude --resume <id> --model X` keeps the session and switches the model. */
+export const MODELS = ['haiku', 'sonnet', 'opus'];
+
+export function reply(taskId: number, text: string, model?: string) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
   if (task.status === 'running') throw new Error('Task is running; wait for its checkpoint or stop it first');
   if (task.merge_state === 'merging') throw new Error('This task is being merged right now');
+  if (model !== undefined && !MODELS.includes(model)) throw new Error(`Unknown model: ${model}`);
+  if (model && model !== task.model) updateTask(taskId, { model });
   leaveMergeQueue(task); // the work is about to change; merge again once the agent reports back
   enqueue(taskId, text);
 }
