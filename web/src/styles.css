@@ -155,6 +155,7 @@ button.ghost.toggle[aria-pressed="true"] { color: var(--accent); background: var
 .new-task { padding: 10px; display: grid; gap: 8px; margin: 4px 0 20px; }
 .new-task-row { display: flex; gap: 8px; }
 .new-task-row select { width: auto; }
+.new-task-row select.templates { max-width: 130px; }
 
 .columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
 .column { min-width: 0; }

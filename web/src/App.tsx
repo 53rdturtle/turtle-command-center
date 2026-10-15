@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type Task } from './api.ts';
+import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type Task, type TaskTemplate } from './api.ts';
 import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
 import { ImageThumbs, useImageInput } from './images.tsx';
 import { ago } from './time.ts';
@@ -300,7 +300,35 @@ function NewTask({ project }: { project: Project }) {
   const [descFocused, setDescFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const images = useImageInput(setDescription);
+
+  useEffect(() => {
+    api.templates(project.slug).then(setTemplates).catch(() => setTemplates([]));
+  }, [project.slug]);
+  // The template whose title is typed in, if any: saving updates it, and it can be deleted.
+  const current = templates.find((t) => t.title === title.trim());
+
+  // One menu for templates keeps the form to a single extra control.
+  const onTemplate = async (value: string) => {
+    setError(null);
+    try {
+      if (value === 'save') {
+        setTemplates(await api.saveTemplate(project.slug, { title, description }));
+      } else if (value === 'delete' && current) {
+        if (confirm(`Delete template "${current.title}"?`)) setTemplates(await api.deleteTemplate(project.slug, current.id));
+      } else {
+        const t = templates.find((t) => String(t.id) === value);
+        if (t) {
+          setTitle(t.title);
+          setDescription(t.description);
+          setExpanded(true);
+        }
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
 
   const submit = async () => {
     if (!title.trim() || images.uploading) return;
@@ -328,6 +356,13 @@ function NewTask({ project }: { project: Project }) {
           placeholder={`New task for ${project.name}…`}
           aria-label="Task title"
         />
+        <select className="templates" value="" onChange={(e) => onTemplate(e.target.value)} aria-label="Templates">
+          <option value="" disabled hidden>Templates</option>
+          {templates.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+          {templates.length > 0 && <option value="-" disabled>──────────</option>}
+          <option value="save" disabled={!title.trim()}>{current ? 'Update template' : 'Save as template'}</option>
+          {current && <option value="delete">Delete template</option>}
+        </select>
         <select value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model">
           {MODELS.map((m) => <option key={m}>{m}</option>)}
         </select>
