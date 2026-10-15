@@ -25,7 +25,7 @@ Requires the `claude` CLI, logged in (`claude login`). Sessions run on your Clau
 | Variable | Default | |
 |---|---|---|
 | `TCC_PORT` | `7777` | |
-| `TCC_MAX_CONCURRENT` | `2` | Agents running at once across all projects; extra tasks queue |
+| `TCC_MAX_CONCURRENT` | `5` | Default for agents running at once across all projects; extra tasks queue. Change it live by editing the number in the board header (saved in the DB, overrides this) |
 | `TCC_DATA_DIR` | `~/.turtle-cc` | SQLite DB + task worktrees |
 | `TCC_CLAUDE_BIN` | `claude` | |
 
@@ -34,6 +34,8 @@ Requires the `claude` CLI, logged in (`claude login`). Sessions run on your Clau
 The server can restart at any time (`npm run dev` is safe to use while agents work): agents and the board
 only share the SQLite database and log files.
 
+- `server/guard.ts` keeps other websites out of the API: requests need a loopback `Host` (no DNS rebinding), and
+  mutating requests need `Content-Type: application/json`, an `X-TCC: 1` header and, if sent, a local `Origin`.
 - `server/runner.ts` starts each agent turn as a **detached** `claude -p --output-format stream-json` process writing
   to a log file in `~/.turtle-cc/runs`, and follows that log. After a restart the server re-attaches from the last
   processed byte offset; runs that finished while it was down are completed from their logs. `AgentRunner` is the
@@ -44,7 +46,12 @@ only share the SQLite database and log files.
 - `server/tasks.ts` has the scheduler and task lifecycle, and streams changes to the UI (SSE at `/api/stream`)
   by polling the database's `rev` counter.
 - **Merge into &lt;branch&gt;** merges the task branch (`--no-ff`) into whatever your main checkout has checked out, then removes
-  the worktree and branch. On conflicts the merge is aborted (your checkout is untouched) and you can ask the agent to resolve them.
+  the worktree and branch. It only appears when the task has commits or uncommitted edits your checkout doesn't have yet. On conflicts the merge is aborted (your checkout is untouched) and you can ask the agent to resolve them.
 - **Mark done** commits leftover changes and removes the worktree but keeps the `tcc/...` branch.
   **Discard** deletes the worktree and the branch.
-- Hitting a usage limit parks the task and retries it automatically after 30 minutes.
+- **Accounts** (header button): agents run on the first account with usage left. When it hits its usage limit, its tasks
+  resume the same session on the next account; only when every account is limited do tasks park until the earliest
+  reset (or 30 minutes if the limit message doesn't say). The default account is whatever `claude` is logged in to; add
+  more with a token from `claude setup-token` (run it and sign in with that account). Each run gets its account's token
+  as `CLAUDE_CODE_OAUTH_TOKEN`; sessions live in the shared `~/.claude`, so they carry over between accounts. Tokens are
+  stored in the local SQLite DB and never sent to the browser.

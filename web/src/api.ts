@@ -20,6 +20,8 @@ export interface Task {
   description: string;
   status: Status;
   model: string;
+  /** Account of the current or last run; null when there is only one account. */
+  account: string | null;
   sessionId: string | null;
   worktree: string | null;
   branch: string | null;
@@ -27,8 +29,14 @@ export interface Task {
   split: Split | null;
   queuedPrompt: string | null;
   error: string | null;
+  /** The agent is resolving merge conflicts; the board merges when it's done. */
+  merging: boolean;
   retryAt: number | null;
   costUsd: number;
+  /** Tokens in the session's context as of its latest model call. */
+  contextTokens: number | null;
+  /** The model's context window; known once a run has finished. */
+  contextWindow: number | null;
   lastActivity: string | null;
   permissions: Permission[];
   createdAt: number;
@@ -46,17 +54,41 @@ export interface Project {
   currentBranch: string | null;
 }
 
+export interface Account {
+  id: number;
+  name: string;
+  /** False for the account the `claude` CLI is logged in to. */
+  usesToken: boolean;
+  limitedUntil: number | null;
+  running: number;
+}
+
 export type MergeResult =
   | { ok: true; target: string }
-  | { ok: false; target: string; conflicts: string[]; message: string };
+  | { ok: false; target: string; conflicts: string[]; message: string }
+  /** Conflicts were handed to the task's agent; the merge finishes on its own. */
+  | { ok: false; resolving: true; target: string; conflicts: string[] };
+
+export interface DiffFile {
+  path: string;
+  oldPath?: string;
+  status: string;
+  additions: number | null;
+  deletions: number | null;
+  /** null when cut off by the server's size cap */
+  patch: string | null;
+}
+
+export interface TaskDiff { target: string; base: string; files: DiffFile[]; additions: number; deletions: number; truncated: boolean }
 
 export interface TaskEvent { id: number; task_id: number; ts: number; kind: string; text: string }
 
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
-    headers: body ? { 'content-type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    // The server rejects mutating requests without these (see server/guard.ts).
+    headers: method === 'GET' ? undefined : { 'content-type': 'application/json', 'x-tcc': '1' },
+    body: method === 'GET' ? undefined : JSON.stringify(body ?? {}),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -69,10 +101,15 @@ export const api = {
   addProject: (p: { name: string; path: string; defaultModel: string; permissionMode: string }) =>
     call<Project>('POST', '/api/projects', p),
   updateProject: (slug: string, p: Partial<Project>) => call<Project>('PATCH', `/api/projects/${slug}`, p),
+  accounts: () => call<Account[]>('GET', '/api/accounts'),
+  addAccount: (a: { name: string; token: string }) => call<Account[]>('POST', '/api/accounts', a),
+  removeAccount: (id: number) => call<Account[]>('DELETE', `/api/accounts/${id}`),
+  clearAccountLimit: (id: number) => call<Account[]>('POST', `/api/accounts/${id}/clear-limit`),
   tasks: (slug: string) => call<Task[]>('GET', `/api/projects/${slug}/tasks`),
   createTask: (slug: string, t: { title: string; description: string; model: string }) =>
     call<Task>('POST', `/api/projects/${slug}/tasks`, t),
   events: (id: number) => call<TaskEvent[]>('GET', `/api/tasks/${id}/events`),
+  diff: (id: number) => call<TaskDiff>('GET', `/api/tasks/${id}/diff`),
   reply: (id: number, text: string) => call('POST', `/api/tasks/${id}/reply`, { text }),
   approveSplit: (id: number, subtasks: Subtask[]) => call('POST', `/api/tasks/${id}/split/approve`, { subtasks }),
   stop: (id: number) => call('POST', `/api/tasks/${id}/stop`),
@@ -80,8 +117,11 @@ export const api = {
   done: (id: number) => call('POST', `/api/tasks/${id}/done`),
   discard: (id: number) => call('POST', `/api/tasks/${id}/discard`),
   openTerminal: (id: number) => call('POST', `/api/tasks/${id}/open-terminal`),
+  mergeable: (id: number) => call<{ mergeable: boolean }>('GET', `/api/tasks/${id}/mergeable`).then((r) => r.mergeable),
   merge: (id: number) => call<MergeResult>('POST', `/api/tasks/${id}/merge`),
   permission: (id: string, decision: 'allow' | 'always' | 'deny') => call('POST', `/api/permissions/${id}`, { decision }),
+  setMaxConcurrent: (maxConcurrent: number) =>
+    call<{ running: number; maxConcurrent: number }>('PATCH', '/api/settings', { maxConcurrent }),
 };
 
 // ---------- live stream ----------
