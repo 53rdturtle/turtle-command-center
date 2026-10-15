@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { LIMIT_RETRY_MS } from './config.ts';
+import { existsSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { join } from 'node:path';
+import { DATA_DIR, LIMIT_RETRY_MS } from './config.ts';
 import {
   addEvent, db, DB_PATH, getAccount, getMaxConcurrent, getPermission, getProject, getTask, lastEvent, listAccounts,
   pendingPermissions, saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
   type AccountRow, type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
-import { openResumeTerminal } from './openTerminal.ts';
+import { openResumeTerminal, openShellTerminal } from './openTerminal.ts';
 import {
   createWorktree, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff, wasMerged,
   type MergeResult,
@@ -440,6 +442,7 @@ export async function markDone(taskId: number) {
   const project = getProject(task.project_id)!;
   if (task.branch && task.worktree) await saveAndRemoveWorktree(project.path, task.worktree, taskId);
   updateTask(taskId, { status: 'done', worktree: task.branch ? null : task.worktree });
+  removeTryData(taskId);
 }
 
 /** Automatic resolve-and-retry rounds per Merge click before the board asks you instead. */
@@ -476,6 +479,7 @@ async function attemptMerge(taskId: number): Promise<MergeOutcome> {
   if (result.ok) {
     updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null });
     addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
+    removeTryData(taskId);
     return result;
   }
   if (!result.conflicts.length || task.merge_attempts >= MAX_MERGE_ATTEMPTS) {
@@ -549,6 +553,7 @@ export async function discard(taskId: number) {
   const project = getProject(task.project_id)!;
   if (task.branch && task.worktree) await discardWorktree(project.path, task.worktree, task.branch);
   updateTask(taskId, { status: 'discarded', worktree: null });
+  removeTryData(taskId);
 }
 
 /** Hands the session to an interactive terminal; stops the board's run first so two processes don't share it. */
@@ -559,6 +564,46 @@ export async function openInTerminal(taskId: number) {
   if (task.status === 'running' || task.status === 'queued' || task.status === 'limited') await stop(taskId);
   await openResumeTerminal(task.worktree, task.session_id, `#${taskId} ${task.title}`);
   addEvent(taskId, 'user', 'Opened the session in a terminal.');
+}
+
+/** A port nothing is listening on right now. */
+function freePort() {
+  return new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address() as { port: number };
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+const tryDataDir = (taskId: number) => join(DATA_DIR, 'try', String(taskId));
+
+/** Best effort: a sandbox that is still running keeps its database open. */
+function removeTryData(taskId: number) {
+  try {
+    rmSync(tryDataDir(taskId), { recursive: true, force: true });
+  } catch {}
+}
+
+/**
+ * Opens a terminal in the task's worktree running the project's try command (a plain shell without one).
+ * It gets free ports and its own data dir as TCC_* variables, so when the project is this app the copy
+ * under test runs beside the board without sharing its database, scheduler or ports.
+ */
+export async function tryIt(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (!task.worktree || !existsSync(task.worktree)) throw new Error('This task has no worktree to try');
+  const project = getProject(task.project_id)!;
+  const env = {
+    TCC_PORT: String(await freePort()),
+    TCC_DEV_PORT: String(await freePort()),
+    TCC_DATA_DIR: tryDataDir(taskId),
+  };
+  await openShellTerminal(task.worktree, `Try #${taskId} ${task.title}`, project.try_command?.trim() || null, env);
+  return env;
 }
 
 export function retry(taskId: number) {

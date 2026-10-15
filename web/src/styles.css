@@ -289,3 +289,7 @@ button.chip-button:hover { color: var(--text); }
 .dl.del { background: var(--danger-soft); color: var(--text); }
 .dl.hunk { color: var(--info); background: var(--info-soft); }
 .dl.note { color: var(--muted); }
+
+.panel .try-command { margin: 12px 0; }
+.panel .try-command span { font-size: 12px; }
+.try-note { font-size: 13px; margin: 8px 0 0; }

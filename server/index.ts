@@ -11,7 +11,7 @@ import { localOnly } from './guard.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
   accountsDto, addAccount, answerPermission, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
-  merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, toDto,
+  merge, mergeable, openInTerminal, tryIt, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, toDto,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
 
@@ -24,6 +24,8 @@ const projectDto = async (p: ProjectRow) => ({
   currentBranch: await currentBranch(p.path),
   slug: p.slug, name: p.name, path: p.path, remote: p.remote,
   defaultModel: p.default_model, permissionMode: p.permission_mode, alwaysAllow: JSON.parse(p.always_allow),
+  tryCommand: p.try_command ?? '',
+  suggestedTryCommand: existsSync(resolve(p.path, 'package.json')) ? 'npm install && npm run dev' : '',
 });
 
 // ---------- projects ----------
@@ -47,10 +49,11 @@ app.patch('/api/projects/:slug', async (c) => {
   const project = getProjectBySlug(c.req.param('slug'));
   if (!project) return c.json({ error: 'Project not found' }, 404);
   const body = await c.req.json();
-  db.prepare('UPDATE projects SET default_model = ?, permission_mode = ?, always_allow = ? WHERE id = ?').run(
+  db.prepare('UPDATE projects SET default_model = ?, permission_mode = ?, always_allow = ?, try_command = ? WHERE id = ?').run(
     body.defaultModel ?? project.default_model,
     body.permissionMode ?? project.permission_mode,
     body.alwaysAllow ? JSON.stringify(body.alwaysAllow) : project.always_allow,
+    typeof body.tryCommand === 'string' ? body.tryCommand.trim() || null : project.try_command,
     project.id,
   );
   return c.json(await projectDto(getProjectBySlug(project.slug)!));
@@ -113,6 +116,7 @@ app.post('/api/tasks/:id/retry', (c) => (retry(taskId(c)), c.json({ ok: true }))
 app.post('/api/tasks/:id/done', async (c) => (await markDone(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/discard', async (c) => (await discard(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/open-terminal', async (c) => (await openInTerminal(taskId(c)), c.json({ ok: true })));
+app.post('/api/tasks/:id/try', async (c) => c.json(await tryIt(taskId(c))));
 app.get('/api/tasks/:id/mergeable', async (c) => c.json({ mergeable: await mergeable(taskId(c)) }));
 app.post('/api/tasks/:id/merge', async (c) => c.json(await merge(taskId(c))));
 

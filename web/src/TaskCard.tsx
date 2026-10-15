@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { api, onStream, type Checkpoint, type DiffFile, type MergeResult, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent } from './api.ts';
+import { api, onStream, type Checkpoint, type DiffFile, type MergeResult, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -50,12 +50,15 @@ function useMergeable(task: Task, targetBranch: string | null) {
   return eligible && mergeable;
 }
 
-export function TaskCard({ task, parent, children, targetBranch }: { task: Task; parent?: Task; children: Task[]; targetBranch: string | null }) {
+export function TaskCard({ task, parent, children, targetBranch, tryCommand = '' }: {
+  task: Task; parent?: Task; children: Task[]; targetBranch: string | null; tryCommand?: string;
+}) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [showChanges, setShowChanges] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showMore, setShowMore] = useState(false);
+  const [tried, setTried] = useState<TryEnv | null>(null);
   const [mergeFailure, setMergeFailure] = useState<Extract<MergeResult, { message: string }> | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : task.status;
@@ -115,6 +118,13 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
         <Body task={task} children={children} />
       </div>
 
+      {tried && (
+        <p className="muted try-note">
+          Opened a terminal in the worktree{tryCommand && <> running <code>{tryCommand}</code></>}. A copy of this board started there
+          uses dev port {tried.TCC_DEV_PORT} and API port {tried.TCC_PORT}.{' '}
+          <button className="ghost small" onClick={() => setTried(null)}>×</button>
+        </p>
+      )}
       {mergeFailure && <MergeFailure taskId={task.id} failure={mergeFailure} onDismiss={() => setMergeFailure(null)} />}
       {error && <p className="error">{error}</p>}
 
@@ -127,6 +137,16 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
         {hasWorktree && (
           <button className="ghost" onClick={() => setShowChanges((s) => !s)} title="What this task changed, relative to the branch it would merge into">
             {showChanges ? 'Hide changes' : 'Changes'}
+          </button>
+        )}
+        {hasWorktree && (
+          <button
+            className="ghost"
+            disabled={busy}
+            onClick={() => run(async () => setTried(await api.tryIt(task.id)))}
+            title={tryCommand ? `Run "${tryCommand}" in this task's worktree (change it in project settings)` : "Open a shell in this task's worktree (set a try command in project settings)"}
+          >
+            Try it
           </button>
         )}
         {secondary && resumeCmd && (

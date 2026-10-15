@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 export const PORT = Number(process.env.TCC_PORT ?? 7777);
 // Vite dev server port; the API accepts it as an Origin for requests proxied from it (see vite.config.ts).
-export const DEV_PORT = 5173;
+export const DEV_PORT = Number(process.env.TCC_DEV_PORT ?? 5173);
 export const DATA_DIR = process.env.TCC_DATA_DIR ?? join(homedir(), '.turtle-cc');
 // Pro plan usage limits are shared across every session. The board can override this (settings table).
 export const DEFAULT_MAX_CONCURRENT = Number(process.env.TCC_MAX_CONCURRENT ?? 5);

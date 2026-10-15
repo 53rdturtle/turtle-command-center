@@ -26,6 +26,7 @@ Requires the `claude` CLI, logged in (`claude login`). Sessions run on your Clau
 |---|---|---|
 | `TCC_PORT` | `7777` | |
 | `TCC_MAX_CONCURRENT` | `5` | Default for agents running at once across all projects; extra tasks queue. Change it live by editing the number in the board header (saved in the DB, overrides this) |
+| `TCC_DEV_PORT` | `5173` | Vite dev server port (`npm run dev`) |
 | `TCC_DATA_DIR` | `~/.turtle-cc` | SQLite DB + task worktrees |
 | `TCC_CLAUDE_BIN` | `claude` | |
 
@@ -47,6 +48,10 @@ only share the SQLite database and log files.
   by polling the database's `rev` counter.
 - **Merge into &lt;branch&gt;** merges the task branch (`--no-ff`) into whatever your main checkout has checked out, then removes
   the worktree and branch. It only appears when the task has commits or uncommitted edits your checkout doesn't have yet. On conflicts the merge is aborted (your checkout is untouched) and you can ask the agent to resolve them.
+- **Try it** opens a terminal in the task's worktree and runs the project's *Try command* (project settings; e.g.
+  `npm install && npm run dev`), or just a shell when there is none. The terminal gets free ports in `TCC_PORT` and
+  `TCC_DEV_PORT` and a sandbox `TCC_DATA_DIR` (`~/.turtle-cc/try/<task>`), so when the project is this app, the copy
+  under test runs beside your board with its own empty database instead of picking up your tasks.
 - **Mark done** commits leftover changes and removes the worktree but keeps the `tcc/...` branch.
   **Discard** deletes the worktree and the branch.
 - **Accounts** (header button): agents run on the first account with usage left. When it hits its usage limit, its tasks
