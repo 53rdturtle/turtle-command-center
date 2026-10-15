@@ -118,6 +118,7 @@ function Board({ project }: { project: Project }) {
         parent={t.parentId ? tasks.get(t.parentId) : undefined}
         children={all.filter((c) => c.parentId === t.id)}
         targetBranch={project.currentBranch}
+        defaultModel={project.defaultModel}
       />
     </CardErrorBoundary>
   );

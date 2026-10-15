@@ -1,4 +1,4 @@
-import { Component, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import { api, onStream, type Checkpoint, type DiffFile, type MergeResult, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent } from './api.ts';
 
@@ -50,18 +50,17 @@ function useMergeable(task: Task, targetBranch: string | null) {
   return eligible && mergeable;
 }
 
-export function TaskCard({ task, parent, children, targetBranch }: { task: Task; parent?: Task; children: Task[]; targetBranch: string | null }) {
+type CardProps = { task: Task; parent?: Task; children: Task[]; targetBranch: string | null; defaultModel: string };
+
+export function TaskCard({ task, parent, children, targetBranch, defaultModel }: CardProps) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [showChanges, setShowChanges] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [showMore, setShowMore] = useState(false);
   const [mergeFailure, setMergeFailure] = useState<Extract<MergeResult, { message: string }> | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : task.status;
-  // Done cards keep only the closing actions in view; the rest sit behind "⋯".
-  const finished = task.status === 'done';
-  const secondary = !finished || showMore;
+  const active = task.status === 'running' || task.status === 'queued';
   const canMerge = useMergeable(task, targetBranch);
   const hasWorktree = Boolean(task.branch && task.worktree);
   const diff = useDiff(task, hasWorktree && (showChanges || !['running', 'queued'].includes(task.status)));
@@ -79,11 +78,29 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
     setTimeout(() => setCopied(false), 1500);
   };
 
+  // Branch, account and cost are reference info, so they live in the #id tooltip rather than a chip each.
+  const info = [
+    task.branch && `Branch: ${task.branch}`,
+    task.account && `Account: ${task.account}`,
+    task.costUsd > 0 && `≈$${task.costUsd.toFixed(2)} equivalent API cost (counts against subscription usage)`,
+  ].filter(Boolean).join('\n');
+  const hasDiff = Boolean(diff.data && diff.data.files.length > 0);
+
+  // One primary action per card; everything else sits in the "⋯" menu.
+  const primary: { label: string; run: () => Promise<unknown>; title?: string; quiet?: boolean } | null =
+    active ? { label: 'Stop', run: () => api.stop(task.id), quiet: true }
+    : task.status === 'failed' || task.status === 'limited' ? { label: 'Retry now', run: () => api.retry(task.id) }
+    : canMerge ? { label: `Merge into ${targetBranch ?? 'current branch'}`, run: merge, title: `Merge ${task.branch} into the branch checked out in your repo`, quiet: !task.checkpoint?.done }
+    : task.status !== 'done' ? { label: 'Mark done', run: () => api.done(task.id), title: 'Keep the branch, remove the worktree', quiet: !task.checkpoint?.done }
+    : null;
+  // Mark done moves to the menu whenever another action takes the primary slot.
+  const doneInMenu = !active && task.status !== 'done' && primary?.label !== 'Mark done';
+
   return (
     <article className={`card status-${status}`}>
       <header className="card-head">
         <div className="card-title">
-          <span className="task-id">#{task.id}</span>
+          <span className="task-id" title={info || undefined}>#{task.id}</span>
           <h3>{task.title}</h3>
         </div>
         <span className={`pill pill-${status}`}>
@@ -94,15 +111,12 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
 
       <div className="meta">
         {parent && <span className="chip">↳ from #{parent.id} {parent.title}</span>}
-        <span className="chip">{task.model}</span>
-        {task.account && <span className="chip" title="Account this task last ran on">{task.account}</span>}
-        {task.branch && <span className="chip mono">{task.branch}</span>}
-        {diff.data && diff.data.files.length > 0 && (
-          <button className="chip chip-button mono" onClick={() => setShowChanges(true)} title={`Changes relative to ${diff.data.target}`}>
-            <span className="add">+{diff.data.additions}</span> <span className="del">−{diff.data.deletions}</span> · {diff.data.files.length} file{diff.data.files.length === 1 ? '' : 's'}
+        {task.model !== defaultModel && <span className="chip" title="Differs from the project's default model">{task.model}</span>}
+        {hasDiff && diff.data && (
+          <button className="chip chip-button mono" onClick={() => setShowChanges((s) => !s)} title={`${showChanges ? 'Hide' : 'Show'} changes relative to ${diff.data.target}`}>
+            {showChanges ? '▾' : '▸'} <span className="add">+{diff.data.additions}</span> <span className="del">−{diff.data.deletions}</span> · {diff.data.files.length} file{diff.data.files.length === 1 ? '' : 's'}
           </button>
         )}
-        {task.costUsd > 0 && <span className="chip" title="Equivalent API cost; on a subscription this counts against usage limits">≈${task.costUsd.toFixed(2)}</span>}
       </div>
 
       <div className="card-body">
@@ -119,53 +133,40 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
       {error && <p className="error">{error}</p>}
 
       <footer className="card-actions">
-        {secondary && (
-          <button className="ghost" onClick={() => setShowTranscript((s) => !s)}>
-            {showTranscript ? 'Hide transcript' : 'Transcript'}
-          </button>
-        )}
-        {hasWorktree && (
-          <button className="ghost" onClick={() => setShowChanges((s) => !s)} title="What this task changed, relative to the branch it would merge into">
-            {showChanges ? 'Hide changes' : 'Changes'}
-          </button>
-        )}
-        {secondary && resumeCmd && (
-          <button className="ghost" disabled={busy} onClick={() => run(() => api.openTerminal(task.id))} title={task.status === 'running' ? 'Stops the agent and continues the session in a new terminal window' : 'Continue the session in a new terminal window'}>
-            Open in terminal
-          </button>
-        )}
-        {secondary && resumeCmd && (
-          <button className="ghost" onClick={copyResume} title={resumeCmd}>
-            {copied ? 'Copied ✓' : 'Copy resume cmd'}
-          </button>
-        )}
-        <span className="spacer" />
-        {(task.status === 'running' || task.status === 'queued' || task.status === 'limited') && (
-          <button className="ghost" disabled={busy} onClick={() => run(() => api.stop(task.id))}>Stop</button>
-        )}
-        {(task.status === 'failed' || task.status === 'limited') && (
-          <button className="ghost" disabled={busy} onClick={() => run(() => api.retry(task.id))}>Retry now</button>
-        )}
-        {canMerge && (
-          <button className={task.checkpoint?.done ? '' : 'ghost'} disabled={busy} onClick={merge} title={`Merge ${task.branch} into the branch checked out in your repo`}>
-            Merge into {targetBranch ?? 'current branch'}
-          </button>
-        )}
-        {task.status !== 'done' && (
-          <button className="ghost" disabled={busy} onClick={() => run(() => api.done(task.id))} title="Keep the branch, remove the worktree">Mark done</button>
-        )}
-        {!secondary ? null : confirmDiscard ? (
+        {confirmDiscard ? (
           <>
-            <button className="danger" disabled={busy} onClick={() => run(() => api.discard(task.id))}>Discard work + branch</button>
+            <span className="confirm-text muted">Delete this task's work and branch?</span>
+            <span className="spacer" />
             <button className="ghost" onClick={() => setConfirmDiscard(false)}>Cancel</button>
+            <button className="danger" disabled={busy} onClick={() => run(() => api.discard(task.id))}>Discard work + branch</button>
           </>
         ) : (
-          <button className="ghost" onClick={() => setConfirmDiscard(true)}>Discard</button>
-        )}
-        {finished && (
-          <button className="ghost" onClick={() => setShowMore((m) => !m)} title={showMore ? 'Fewer actions' : 'Transcript, terminal, discard…'}>
-            {showMore ? '×' : '⋯'}
-          </button>
+          <>
+            <span className="spacer" />
+            <Menu>
+              <MenuItem onClick={() => setShowTranscript((s) => !s)}>{showTranscript ? 'Hide transcript' : 'Transcript'}</MenuItem>
+              {/* With a diff, the "+N −M" chip toggles changes; this covers running tasks and empty diffs. */}
+              {hasWorktree && !hasDiff && (
+                <MenuItem onClick={() => setShowChanges((s) => !s)}>{showChanges ? 'Hide changes' : 'Changes'}</MenuItem>
+              )}
+              {resumeCmd && (
+                <MenuItem disabled={busy} onClick={() => run(() => api.openTerminal(task.id))} title={task.status === 'running' ? 'Stops the agent and continues the session in a new terminal window' : 'Continue the session in a new terminal window'}>
+                  Open in terminal
+                </MenuItem>
+              )}
+              {resumeCmd && <MenuItem onClick={copyResume} title={resumeCmd}>{copied ? 'Copied ✓' : 'Copy resume command'}</MenuItem>}
+              {task.status === 'limited' && <MenuItem disabled={busy} onClick={() => run(() => api.stop(task.id))}>Stop</MenuItem>}
+              {doneInMenu && (
+                <MenuItem disabled={busy} onClick={() => run(() => api.done(task.id))} title="Keep the branch, remove the worktree">Mark done</MenuItem>
+              )}
+              <MenuItem danger onClick={() => setConfirmDiscard(true)}>Discard…</MenuItem>
+            </Menu>
+            {primary && (
+              <button className={primary.quiet ? 'ghost' : ''} disabled={busy} onClick={() => run(primary.run)} title={primary.title}>
+                {primary.label}
+              </button>
+            )}
+          </>
         )}
       </footer>
 
@@ -173,6 +174,33 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
       {showTranscript && <Transcript taskId={task.id} />}
     </article>
   );
+}
+
+/** A "⋯" button with a small dropdown; closes on outside click, Escape, or picking an item. */
+function Menu({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => ref.current?.contains(e.target as Node) || setOpen(false);
+    const onKey = (e: globalThis.KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    addEventListener('mousedown', onDown);
+    addEventListener('keydown', onKey);
+    return () => {
+      removeEventListener('mousedown', onDown);
+      removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  return (
+    <div className="menu" ref={ref}>
+      <button className="ghost" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)} title="More actions">⋯</button>
+      {open && <div className="menu-list" role="menu" onClick={() => setOpen(false)}>{children}</div>}
+    </div>
+  );
+}
+
+function MenuItem({ danger, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean }) {
+  return <button role="menuitem" className={danger ? 'menu-item danger-text' : 'menu-item'} {...props} />;
 }
 
 function Body({ task, children }: { task: Task; children: Task[] }) {

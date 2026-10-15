@@ -227,8 +227,23 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .error { color: var(--danger); margin: 6px 0 0; font-size: 13px; }
 .error-box { background: var(--danger-soft); color: var(--danger); padding: 8px 10px; border-radius: 6px; max-height: 200px; overflow: auto; }
 
-.card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .card-actions button { padding: 3px 10px; font-size: 13px; }
+.confirm-text { font-size: 13px; }
+
+.menu { position: relative; }
+.menu-list {
+  position: absolute; right: 0; bottom: calc(100% + 4px); z-index: 10;
+  min-width: 190px; padding: 4px; display: grid;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.15);
+}
+.card-actions .menu-item {
+  background: none; color: var(--text); border: none; border-radius: 6px;
+  padding: 6px 10px; text-align: left; font-weight: 400; white-space: nowrap;
+}
+.card-actions .menu-item:hover:not(:disabled) { background: var(--surface-2); }
+.card-actions .menu-item.danger-text { color: var(--danger); }
 
 .transcript { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 10px; max-height: 420px; overflow-y: auto; display: grid; gap: 8px; }
 .ev { display: grid; grid-template-columns: 80px 1fr; gap: 8px; font-size: 13px; }
