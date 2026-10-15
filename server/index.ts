@@ -14,7 +14,7 @@ import { boardVersion, startUpdate } from './selfUpdate.ts';
 import { pickFolder } from './pickFolder.ts';
 import { readImage, saveImage } from './images.ts';
 import {
-  accountsDto, addAccount, answerPermission, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
+  accountsDto, addAccount, answerPermission, usageToday, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
   cancelMerge, dismissMergeFailure, merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, toDto, tryIt,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
@@ -189,7 +189,7 @@ app.get('/api/stream', (c) =>
     });
     stream.onAbort(() => { unsubscribe(); });
     while (!stream.aborted) {
-      await stream.writeSSE({ event: 'status', data: JSON.stringify({ ...status(), accounts: accountsDto() }) });
+      await stream.writeSSE({ event: 'status', data: JSON.stringify({ ...status(), accounts: accountsDto(), usageToday: usageToday() }) });
       await stream.sleep(5000);
     }
   }));

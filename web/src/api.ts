@@ -13,6 +13,16 @@ export type Status =
   | 'queued' | 'running' | 'needs_input' | 'split_proposed' | 'split'
   | 'limited' | 'failed' | 'done' | 'discarded';
 
+/** Tokens, turns and wall time consumed by finished runs. */
+export interface RunTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  turns: number;
+  durationMs: number;
+}
+
 export interface Task {
   id: number;
   projectSlug: string;
@@ -37,7 +47,10 @@ export interface Task {
   /** Why the last merge didn't land; cleared on dismiss or the next merge. */
   mergeFailure: MergeFailure | null;
   retryAt: number | null;
+  /** API-equivalent cost of the task's runs; a subscription isn't billed per token. */
   costUsd: number;
+  /** Totals over the task's finished runs. */
+  usage: RunTotals;
   /** Tokens in the session's context as of its latest model call. */
   contextTokens: number | null;
   /** The model's context window; known once a run has finished. */
@@ -177,7 +190,11 @@ export const api = {
 export type StreamMessage =
   | { type: 'task'; task: Task }
   | { type: 'event'; event: TaskEvent }
-  | { type: 'status'; running: number; maxConcurrent: number; accounts: Account[] };
+  | {
+    type: 'status'; running: number; maxConcurrent: number; accounts: Account[];
+    /** Per project slug, what runs finished since local midnight consumed. */
+    usageToday: Record<string, RunTotals & { runs: number }>;
+  };
 
 type Handler = (m: StreamMessage) => void;
 const handlers = new Set<Handler>();

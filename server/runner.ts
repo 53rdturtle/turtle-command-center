@@ -40,8 +40,21 @@ export interface UsageWindow { utilization: number; resetsAt: number }
 /** Subscription usage the CLI reports alongside each API call. */
 export interface AccountUsage { fiveHour?: UsageWindow; sevenDay?: UsageWindow }
 
+/** What one run consumed, from its result. Token counts cover every model the run used, subagents included. */
+export interface RunUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  turns: number;
+  durationMs: number;
+}
+
 export interface RunResult {
+  /** API-equivalent cost; on a subscription nothing is billed per token. */
   costUsd: number;
+  /** Null when the run ended without reporting a result. */
+  usage: RunUsage | null;
   /** Size of the model's context window, when the run reported it. */
   contextWindow: number | null;
   resultText: string;
@@ -117,6 +130,20 @@ function parseUsage(info: any): AccountUsage | undefined {
 function contextWindowOf(modelUsage: Record<string, { contextWindow?: number }> | undefined): number | null {
   const sizes = Object.values(modelUsage ?? {}).map((u) => u.contextWindow ?? 0);
   return Math.max(0, ...sizes) || null;
+}
+
+function runUsage(msg: any): RunUsage {
+  const models = Object.values(msg.modelUsage ?? {}) as any[];
+  const sum = (key: string, fallback: string): number =>
+    models.length ? models.reduce((n, m) => n + (m[key] ?? 0), 0) : (msg.usage?.[fallback] ?? 0);
+  return {
+    inputTokens: sum('inputTokens', 'input_tokens'),
+    outputTokens: sum('outputTokens', 'output_tokens'),
+    cacheReadTokens: sum('cacheReadInputTokens', 'cache_read_input_tokens'),
+    cacheCreationTokens: sum('cacheCreationInputTokens', 'cache_creation_input_tokens'),
+    turns: msg.num_turns ?? 0,
+    durationMs: msg.duration_ms ?? 0,
+  };
 }
 
 function isAlive(pid: number) {
@@ -223,6 +250,7 @@ export class CliRunner implements AgentRunner {
         if (msg?.type === 'result') {
           result = {
             costUsd: msg.total_cost_usd ?? 0,
+            usage: runUsage(msg),
             contextWindow: contextWindowOf(msg.modelUsage),
             resultText: typeof msg.result === 'string' ? msg.result : '',
             isError: Boolean(msg.is_error),
@@ -278,6 +306,7 @@ export class CliRunner implements AgentRunner {
           const errText = existsSync(ref.errLog) ? readFileSync(ref.errLog, 'utf8').trim() : '';
           handlers.onExit({
             costUsd: 0,
+            usage: null,
             contextWindow: null,
             resultText: errText || 'The agent process exited without reporting a result.',
             isError: true,
