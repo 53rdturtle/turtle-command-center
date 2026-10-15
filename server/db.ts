@@ -84,6 +84,8 @@ for (const [name, type] of [
   ['merge_state', 'TEXT'], // 'resolving' while the agent resolves merge conflicts; the board then finishes the merge
   ['merge_attempts', 'INTEGER NOT NULL DEFAULT 0'], // automatic conflict-resolution rounds for the current merge
   ['account_id', 'INTEGER'], // account of the current (or last) run
+  ['context_tokens', 'INTEGER'], // tokens in the session's context as of its latest model call
+  ['context_window', 'INTEGER'], // the model's context window size, reported when a run ends
 ] as const) {
   if (!taskColumns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
 }
@@ -116,6 +118,7 @@ export interface TaskRow {
   created_at: number; updated_at: number;
   rev: number; run_ref: string | null; run_offset: number; run_prompt: string | null;
   merge_state: 'resolving' | null; merge_attempts: number; account_id: number | null;
+  context_tokens: number | null; context_window: number | null;
 }
 export interface AccountRow { id: number; name: string; token: string | null; limited_until: number | null; created_at: number }
 export interface EventRow { id: number; task_id: number; ts: number; kind: string; text: string }

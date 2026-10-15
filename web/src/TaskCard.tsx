@@ -102,6 +102,7 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
             <span className="add">+{diff.data.additions}</span> <span className="del">−{diff.data.deletions}</span> · {diff.data.files.length} file{diff.data.files.length === 1 ? '' : 's'}
           </button>
         )}
+        <ContextChip task={task} />
         {task.costUsd > 0 && <span className="chip" title="Equivalent API cost; on a subscription this counts against usage limits">≈${task.costUsd.toFixed(2)}</span>}
       </div>
 
@@ -172,6 +173,21 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
       {showChanges && <Changes diff={diff} onRefresh={diff.reload} />}
       {showTranscript && <Transcript taskId={task.id} />}
     </article>
+  );
+}
+
+const kTokens = (n: number) => (n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
+
+/** How full the session's context is; the window size is only known once a run has finished. */
+function ContextChip({ task }: { task: Task }) {
+  const { contextTokens: used, contextWindow: size } = task;
+  if (!used) return null;
+  if (!size) return <span className="chip" title="Tokens in the session's context">Context {kTokens(used)}</span>;
+  const pct = Math.round((used / size) * 100);
+  return (
+    <span className={`chip${pct >= 80 ? ' chip-warn' : ''}`} title={`${kTokens(used)} of ${kTokens(size)} tokens. The CLI compacts the conversation when it gets close to full.`}>
+      Context {pct}%
+    </span>
   );
 }
 

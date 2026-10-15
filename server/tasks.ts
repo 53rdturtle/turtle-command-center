@@ -124,6 +124,8 @@ export function toDto(t: TaskRow) {
     merging: t.merge_state === 'resolving',
     retryAt: t.retry_at,
     costUsd: t.cost_usd,
+    contextTokens: t.context_tokens,
+    contextWindow: t.context_window,
     lastActivity: t.status === 'running' ? (lastEvent(t.id)?.text ?? null) : null,
     permissions: pendingPermissions(t.id).map((p) => {
       const input = JSON.parse(p.input);
@@ -281,6 +283,7 @@ function attach(taskId: number) {
   attached.set(taskId, runner.attach(ref, task.run_offset, {
     onEvent: (e) => {
       if (e.kind === 'session') updateTask(taskId, { session_id: e.sessionId, started: 1 });
+      else if (e.kind === 'context') updateTask(taskId, { context_tokens: e.tokens });
       else {
         addEvent(taskId, e.kind, e.text);
         updateTask(taskId, {}); // refresh the card's activity line
@@ -298,7 +301,7 @@ function attach(taskId: number) {
 function finish(taskId: number, result: RunResult) {
   const task = getTask(taskId)!;
   denyPending(taskId, 'The agent run ended.');
-  const base = { cost_usd: task.cost_usd + result.costUsd, run_ref: null };
+  const base = { cost_usd: task.cost_usd + result.costUsd, context_window: result.contextWindow ?? task.context_window, run_ref: null };
   if (result.resultText && !(task.status !== 'running' && result.interrupted)) {
     addEvent(taskId, result.isError ? 'error' : 'result', result.resultText);
   }
