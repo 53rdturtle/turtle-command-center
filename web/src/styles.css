@@ -157,7 +157,8 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 
 .card { padding: 14px 16px; border-left: 4px solid var(--border); }
 .card.status-needs_input, .card.status-split_proposed { border-left-color: var(--accent); }
-.card.status-permission { border-left-color: var(--warn); }
+.card.status-permission, .card.status-limited { border-left-color: var(--warn); }
+.card.status-review { border-left-color: color-mix(in srgb, var(--accent) 40%, var(--surface)); }
 .card.status-failed { border-left-color: var(--danger); }
 .card.status-running { border-left-color: var(--info); }
 
@@ -181,6 +182,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .pill.small { padding: 0 8px; font-size: 11px; }
 .pill-needs_input, .pill-split_proposed { background: var(--accent-soft); color: var(--accent); }
 .pill-permission, .pill-limited { background: var(--warn-soft); color: var(--warn); }
+.pill-review { background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
 .pill-failed { background: var(--danger-soft); color: var(--danger); }
 .pill-running { background: var(--info-soft); color: var(--info); }
 

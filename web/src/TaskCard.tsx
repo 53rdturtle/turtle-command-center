@@ -1,7 +1,7 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
-import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
+import { agentDone, api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -66,7 +66,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
   const [copied, setCopied] = useState(false);
   const [tried, setTried] = useState<TryEnv | null>(null);
   const { busy, error, run } = useAction();
-  const status = task.permissions.length ? 'permission' : task.status;
+  const status = task.permissions.length ? 'permission' : agentDone(task) ? 'review' : task.status;
   const active = task.status === 'running' || task.status === 'queued';
   const canMerge = useMergeable(task, targetBranch);
   const hasWorktree = Boolean(task.branch && task.worktree);
@@ -116,7 +116,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
         </div>
         <span className={`pill pill-${status}`}>
           {(status === 'running' || task.mergeState === 'merging') && <span className="spinner" />}
-          {task.permissions.length ? 'Permission' : task.mergeState ? MERGE_LABEL[task.mergeState] : STATUS_LABEL[task.status]}
+          {task.permissions.length ? 'Permission' : task.mergeState ? MERGE_LABEL[task.mergeState] : status === 'review' ? 'Ready for review' : STATUS_LABEL[task.status]}
         </span>
       </header>
 
