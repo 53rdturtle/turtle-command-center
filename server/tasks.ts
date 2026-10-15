@@ -130,6 +130,11 @@ export function toDto(t: TaskRow) {
     mergeFailure: t.merge_failure ? (JSON.parse(t.merge_failure) as MergeFailure) : null,
     retryAt: t.retry_at,
     costUsd: t.cost_usd,
+    usage: {
+      inputTokens: t.input_tokens, outputTokens: t.output_tokens,
+      cacheReadTokens: t.cache_read_tokens, cacheCreationTokens: t.cache_creation_tokens,
+      turns: t.turns, durationMs: t.duration_ms,
+    },
     contextTokens: t.context_tokens,
     contextWindow: t.context_window,
     lastActivity: t.status === 'running' ? (lastEvent(t.id)?.text ?? null) : null,
@@ -219,6 +224,16 @@ function usageDto(a: AccountRow) {
   const window = (w?: { utilization: number; resetsAt: number }) =>
     w && (w.resetsAt > now ? w : { utilization: 0, resetsAt: null });
   return { fiveHour: window(usage.fiveHour) ?? null, sevenDay: window(usage.sevenDay) ?? null, reportedAt: a.usage_at };
+}
+
+/** Per project, what runs that finished since local midnight consumed. Projects with no runs today are left out. */
+export function usageToday() {
+  const midnight = new Date().setHours(0, 0, 0, 0);
+  const rows = db.prepare(`SELECT p.slug, COUNT(*) AS runs, SUM(r.input_tokens) AS inputTokens, SUM(r.output_tokens) AS outputTokens,
+      SUM(r.cache_read_tokens) AS cacheReadTokens, SUM(r.cache_creation_tokens) AS cacheCreationTokens,
+      SUM(r.turns) AS turns, SUM(r.duration_ms) AS durationMs
+    FROM runs r JOIN projects p ON p.id = r.project_id WHERE r.ended_at >= ? GROUP BY p.slug`).all(midnight) as Record<string, unknown>[];
+  return Object.fromEntries(rows.map(({ slug, ...totals }) => [slug as string, totals]));
 }
 
 export function accountsDto() {
@@ -356,10 +371,44 @@ function attach(taskId: number) {
   }));
 }
 
+/** Records a run's outcome in one transaction, so a restart partway through can't count its usage twice or not at all. */
 function finish(taskId: number, result: RunResult) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    settle(taskId, result);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  continueMerge(taskId);
+}
+
+/** Adds a run's usage to the runs table and returns the task's new totals; a run that's already recorded adds nothing. */
+function addRunUsage(task: TaskRow, result: RunResult): Partial<TaskRow> {
+  const u = result.usage;
+  const log = task.run_ref ? (JSON.parse(task.run_ref) as RunRef).log : null;
+  if (!u || !log) return {};
+  const { changes } = db.prepare(`INSERT OR IGNORE INTO runs (task_id, project_id, log, ended_at, input_tokens, output_tokens,
+    cache_read_tokens, cache_creation_tokens, turns, duration_ms, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(task.id, task.project_id, log, Date.now(), u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheCreationTokens,
+      u.turns, u.durationMs, result.costUsd);
+  if (!changes) return {};
+  return {
+    cost_usd: task.cost_usd + result.costUsd,
+    input_tokens: task.input_tokens + u.inputTokens,
+    output_tokens: task.output_tokens + u.outputTokens,
+    cache_read_tokens: task.cache_read_tokens + u.cacheReadTokens,
+    cache_creation_tokens: task.cache_creation_tokens + u.cacheCreationTokens,
+    turns: task.turns + u.turns,
+    duration_ms: task.duration_ms + u.durationMs,
+  };
+}
+
+function settle(taskId: number, result: RunResult) {
   const task = getTask(taskId)!;
   denyPending(taskId, 'The agent run ended.');
-  const base = { cost_usd: task.cost_usd + result.costUsd, context_window: result.contextWindow ?? task.context_window, run_ref: null };
+  const base = { ...addRunUsage(task, result), context_window: result.contextWindow ?? task.context_window, run_ref: null };
   if (result.resultText && !(task.status !== 'running' && result.interrupted)) {
     addEvent(taskId, result.isError ? 'error' : 'result', result.resultText);
   }
@@ -390,7 +439,6 @@ function finish(taskId: number, result: RunResult) {
     const checkpoint: Checkpoint = { summary: result.resultText || '_The agent ended its turn without a summary._', options: [] };
     updateTask(taskId, { ...base, status: 'needs_input', checkpoint: JSON.stringify(checkpoint) });
   }
-  continueMerge(taskId);
 }
 
 // Retry tasks whose usage-limit cool-down has passed.

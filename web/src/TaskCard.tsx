@@ -3,6 +3,7 @@ import Markdown from 'react-markdown';
 import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
 import { ago, elapsed, useNow } from './time.ts';
 import { agentDone, api, MODELS, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
+import { duration, kTokens, totalTokens, usageBreakdown } from './usage.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -103,7 +104,6 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
   const info = [
     task.branch && `Branch: ${task.branch}`,
     task.account && `Account: ${task.account}`,
-    task.costUsd > 0 && `≈$${task.costUsd.toFixed(2)} equivalent API cost (counts against subscription usage)`,
   ].filter(Boolean).join('\n');
   const hasDiff = Boolean(diff.data && diff.data.files.length > 0);
 
@@ -144,6 +144,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
           </button>
         )}
         <ContextChip task={task} />
+        <UsageChip task={task} />
       </div>
 
       <div className="card-body">
@@ -253,7 +254,17 @@ function MenuItem({ danger, ...props }: ButtonHTMLAttributes<HTMLButtonElement> 
   return <button role="menuitem" className={danger ? 'menu-item danger-text' : 'menu-item'} {...props} />;
 }
 
-const kTokens = (n: number) => (n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
+/** What the task's finished runs consumed, so you can see which tasks eat your usage limits. */
+function UsageChip({ task }: { task: Task }) {
+  const u = task.usage;
+  if (!u.turns && !u.durationMs) return null;
+  const title = [
+    'Used by this task so far (finished runs):',
+    ...usageBreakdown(u),
+    task.costUsd > 0 && `≈$${task.costUsd.toFixed(2)} API-equivalent (not billed on a subscription)`,
+  ].filter(Boolean).join('\n');
+  return <span className="chip" title={title}>{kTokens(totalTokens(u))} tok · {duration(u.durationMs)}</span>;
+}
 
 /** How full the session's context is; the window size is only known once a run has finished. */
 function ContextChip({ task }: { task: Task }) {
