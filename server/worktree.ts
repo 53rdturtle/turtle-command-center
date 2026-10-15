@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync } from 'node:fs';
 import { DATA_DIR } from './config.ts';
 import type { MergeFailureReason } from './db.ts';
 
@@ -48,13 +48,31 @@ export async function createWorktree(repo: string, projectSlug: string, taskId: 
   return { path, branch };
 }
 
+/** Removes links (symlinks, junctions) in a worktree without following them; skips .git and node_modules contents. */
+function unlinkLinks(dir: string) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (lstatSync(path).isSymbolicLink()) unlinkSync(path); // for a junction this removes the link, not its target
+    else if (entry.isDirectory() && entry.name !== '.git' && entry.name !== 'node_modules') unlinkLinks(path);
+  }
+}
+
+/**
+ * On Windows, `git worktree remove --force` follows junctions and deletes what they point to. Agents sometimes
+ * link the main checkout's node_modules into their worktree, which wiped it on merge; so unlink links first.
+ */
+async function removeWorktree(repo: string, path: string) {
+  if (existsSync(path)) unlinkLinks(path);
+  await git(repo, 'worktree', 'remove', '--force', path);
+}
+
 /** Commits anything left uncommitted so removing the worktree never loses work. */
 export async function saveAndRemoveWorktree(repo: string, path: string, taskId: number) {
   if ((await git(path, 'status', '--porcelain')) !== '') {
     await git(path, 'add', '-A');
     await git(path, 'commit', '-m', `tcc: uncommitted work from task #${taskId}`);
   }
-  await git(repo, 'worktree', 'remove', '--force', path);
+  await removeWorktree(repo, path);
 }
 
 export async function currentBranch(repo: string) {
@@ -133,7 +151,7 @@ export async function mergeTaskBranch(repo: string, worktree: string, branch: st
     const detail = String(err.stderr || err.stdout || err.message).trim();
     return { ok: false, target, reason: conflicts.length ? 'conflicts' : 'error', conflicts, files: [], message: detail };
   }
-  await git(repo, 'worktree', 'remove', '--force', worktree);
+  await removeWorktree(repo, worktree);
   await git(repo, 'branch', '-d', branch).catch(() => {});
   return { ok: true, target };
 }
@@ -156,7 +174,7 @@ export async function restoreWorktree(repo: string, path: string, branch: string
 }
 
 export async function discardWorktree(repo: string, path: string, branch: string) {
-  await git(repo, 'worktree', 'remove', '--force', path).catch(() => {});
+  await removeWorktree(repo, path).catch(() => {});
   await git(repo, 'branch', '-D', branch).catch(() => {});
 }
 

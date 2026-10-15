@@ -362,7 +362,7 @@ async function ensureWorktree(task: TaskRow): Promise<'ok' | 'merged' | 'gone'> 
   const project = getProject(task.project_id)!;
   if (await wasMerged(project.path, task.id)) {
     await discardWorktree(project.path, task.worktree, task.branch); // finish the cleanup the merge started
-    updateTask(task.id, { status: 'done', worktree: null, branch: null, error: null, merge_state: null, merge_queued_at: null });
+    updateTask(task.id, { status: 'done', worktree: null, branch: null, error: null, merge_state: null, merge_queued_at: null, merge_failure: null });
     addEvent(task.id, 'user', `Merged \`${task.branch}\` (the server restarted before it could record that).`);
     return 'merged';
   }
@@ -544,6 +544,14 @@ async function attemptMerge(taskId: number) {
     throw new Error('The agent started working again before the merge; merge once it reports back');
   }
   const project = getProject(task.project_id)!;
+  // Merging changes to this app restarts the dev server mid-merge, and the killed server's `git worktree remove`
+  // can still be finishing while the new one retries the merge. If it already landed, just finish the cleanup.
+  if (await wasMerged(project.path, taskId)) {
+    await discardWorktree(project.path, task.worktree, task.branch);
+    updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null, merge_queued_at: null, merge_failure: null });
+    addEvent(taskId, 'user', `Merged \`${task.branch}\` (the server restarted before it could record that).`);
+    return;
+  }
   const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, mergeMessage(task));
   if (result.ok) {
     updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null, merge_queued_at: null, merge_failure: null });
