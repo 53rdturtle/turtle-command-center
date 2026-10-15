@@ -129,6 +129,7 @@ export function toDto(t: TaskRow) {
     contextTokens: t.context_tokens,
     contextWindow: t.context_window,
     lastActivity: t.status === 'running' ? (lastEvent(t.id)?.text ?? null) : null,
+    subtasks: subtaskCounts(t.id),
     permissions: pendingPermissions(t.id).map((p) => {
       const input = JSON.parse(p.input);
       return { id: p.id, toolName: p.tool_name, input, alwaysKey: allowKey(p.tool_name, input) };
@@ -136,6 +137,14 @@ export function toDto(t: TaskRow) {
     createdAt: t.created_at,
     updatedAt: t.updated_at,
   };
+}
+
+function subtaskCounts(taskId: number) {
+  const rows = db.prepare('SELECT status, COUNT(*) AS n FROM tasks WHERE parent_id = ? GROUP BY status')
+    .all(taskId) as { status: string; n: number }[];
+  if (!rows.length) return null;
+  const count = (status: string) => rows.find((r) => r.status === status)?.n ?? 0;
+  return { total: rows.reduce((sum, r) => sum + r.n, 0), done: count('done'), discarded: count('discarded') };
 }
 
 // ---------- agent instructions ----------
@@ -378,7 +387,7 @@ async function ensureWorktree(task: TaskRow): Promise<'ok' | 'merged' | 'gone'> 
   const project = getProject(task.project_id)!;
   if (await wasMerged(project.path, task.id)) {
     await discardWorktree(project.path, task.worktree, task.branch); // finish the cleanup the merge started
-    updateTask(task.id, { status: 'done', worktree: null, branch: null, error: null, merge_state: null, merge_queued_at: null, merge_failure: null });
+    finishTask(task.id, { status: 'done', worktree: null, branch: null, error: null, merge_state: null, merge_queued_at: null, merge_failure: null });
     addEvent(task.id, 'user', `Merged \`${task.branch}\` (the server restarted before it could record that).`);
     return 'merged';
   }
@@ -473,7 +482,7 @@ export async function markDone(taskId: number) {
   leaveMergeQueue(task);
   const project = getProject(task.project_id)!;
   if (task.branch && task.worktree) await saveAndRemoveWorktree(project.path, task.worktree, taskId);
-  updateTask(taskId, { status: 'done', worktree: task.branch ? null : task.worktree });
+  finishTask(taskId, { status: 'done', worktree: task.branch ? null : task.worktree });
 }
 
 /** Automatic resolve-and-retry rounds per Merge click before the board asks you instead. */
@@ -575,13 +584,13 @@ async function attemptMerge(taskId: number) {
   // can still be finishing while the new one retries the merge. If it already landed, just finish the cleanup.
   if (await wasMerged(project.path, taskId)) {
     await discardWorktree(project.path, task.worktree, task.branch);
-    updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null, merge_queued_at: null, merge_failure: null });
+    finishTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null, merge_queued_at: null, merge_failure: null });
     addEvent(taskId, 'user', `Merged \`${task.branch}\` (the server restarted before it could record that).`);
     return;
   }
   const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, mergeMessage(task));
   if (result.ok) {
-    updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null, merge_queued_at: null, merge_failure: null });
+    finishTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null, merge_queued_at: null, merge_failure: null });
     addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
     return;
   }
@@ -685,7 +694,7 @@ export async function discard(taskId: number) {
   leaveMergeQueue(task);
   const project = getProject(task.project_id)!;
   if (task.branch && task.worktree) await discardWorktree(project.path, task.worktree, task.branch);
-  updateTask(taskId, { status: 'discarded', worktree: null });
+  finishTask(taskId, { status: 'discarded', worktree: null });
 }
 
 /** Hands the session to an interactive terminal; stops the board's run first so two processes don't share it. */
@@ -706,4 +715,47 @@ export function retry(taskId: number) {
   if (task.merge_state === 'merging') throw new Error('This task is being merged right now');
   leaveMergeQueue(task);
   enqueue(taskId, task.pending_prompt ?? (task.started ? 'Your previous run ended unexpectedly. Continue where you left off.' : initialPrompt(task)));
+}
+
+// ---------- subtasks ----------
+
+const isFinished = (t: TaskRow) => t.status === 'done' || t.status === 'discarded';
+
+/**
+ * Sets a final status. When that finishes the last open subtask of a parent, the parent is queued
+ * again to integrate the pieces. The check runs synchronously around the write, so concurrent calls
+ * wake the parent exactly once per batch.
+ */
+function finishTask(taskId: number, fields: Partial<TaskRow>) {
+  const wasOpen = !isFinished(getTask(taskId)!);
+  updateTask(taskId, fields);
+  const task = getTask(taskId)!;
+  if (!task.parent_id) return;
+  updateTask(task.parent_id, {}); // refresh the parent's subtask progress
+  if (!wasOpen) return;
+  const parent = getTask(task.parent_id);
+  const children = db.prepare('SELECT * FROM tasks WHERE parent_id = ? ORDER BY id').all(task.parent_id) as unknown as TaskRow[];
+  if (!parent || isFinished(parent) || !children.every(isFinished) || !children.some((c) => c.status === 'done')) return;
+  if (parent.status === 'running' || parent.status === 'split_proposed') {
+    // Don't interrupt a live run or a pending decision; leave a note instead.
+    addEvent(parent.id, 'user', 'All subtasks have finished.');
+    return;
+  }
+  wakeParent(parent, children).catch((err) => addEvent(parent.id, 'error', `Couldn't wake this task: ${err?.message ?? err}`));
+}
+
+async function wakeParent(parent: TaskRow, children: TaskRow[]) {
+  const project = getProject(parent.project_id)!;
+  const git = Boolean(parent.branch);
+  const target = git ? ((await currentBranch(project.path)) ?? 'HEAD') : null;
+  const lines = children.map((c, i) => {
+    let where = '';
+    if (git && c.status === 'done') where = c.branch ? `, branch \`${c.branch}\`` : `, merged into \`${target}\` (already on that branch)`;
+    const summary = c.checkpoint ? (JSON.parse(c.checkpoint) as Checkpoint).summary : null;
+    return `${i + 1}. #${c.id} "${c.title}": ${c.status}${where}${summary ? `\n   Last summary: ${summary}` : ''}`;
+  });
+  const ask = git
+    ? `Integrate their work into your branch \`${parent.branch}\`: in your worktree, merge \`${target}\` and any subtask branches listed above, resolve conflicts, run the project's checks, and report back.`
+    : `Their changes are already in the project directory. Check that the pieces fit together, run the project's checks, and report back.`;
+  enqueue(parent.id, `All subtasks of this task have finished:\n\n${lines.join('\n')}\n\n${ask}`);
 }

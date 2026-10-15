@@ -250,7 +250,7 @@ function Body({ task, children }: { task: Task; children: Task[] }) {
     case 'split':
       return (
         <div>
-          <p className="muted">Split into {children.length} subtasks:</p>
+          <p className="muted">{subtaskProgress(task)}:</p>
           <ul className="subtask-status">
             {children.map((c) => <li key={c.id}>#{c.id} {c.title} <span className={`pill pill-${c.status} small`}>{STATUS_LABEL[c.status]}</span></li>)}
           </ul>
@@ -260,6 +260,14 @@ function Body({ task, children }: { task: Task; children: Task[] }) {
     case 'done':
       return task.checkpoint ? <Summary checkpoint={task.checkpoint} /> : null;
   }
+}
+
+/** e.g. "2/3 subtasks done"; discarded subtasks don't count toward the total. */
+function subtaskProgress(task: Task) {
+  const s = task.subtasks;
+  if (!s) return 'Split into subtasks';
+  const total = s.total - s.discarded;
+  return `${s.done}/${total} subtask${total === 1 ? '' : 's'} done` + (s.discarded ? `, ${s.discarded} discarded` : '');
 }
 
 /** The TL;DR, with the agent's supporting details one click away. */

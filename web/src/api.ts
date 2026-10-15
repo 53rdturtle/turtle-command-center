@@ -42,6 +42,8 @@ export interface Task {
   /** The model's context window; known once a run has finished. */
   contextWindow: number | null;
   lastActivity: string | null;
+  /** Counts over all subtasks, including discarded ones (which the board doesn't list). */
+  subtasks: { total: number; done: number; discarded: number } | null;
   permissions: Permission[];
   createdAt: number;
   updatedAt: number;
