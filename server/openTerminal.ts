@@ -25,9 +25,37 @@ export function openResumeTerminal(cwd: string, sessionId: string, title: string
   }
 }
 
-function launch(cmd: string, args: string[], opts: { cwd?: string; windowsVerbatimArguments?: boolean } = {}) {
+/**
+ * Opens a new terminal window in `cwd` with `env` added to its environment, running `command`
+ * (a shell command line, kept open afterwards) or just a shell when it's empty.
+ */
+export function openShellTerminal(cwd: string, title: string, command: string | null, env: Record<string, string>) {
+  switch (process.platform) {
+    case 'win32': {
+      // `start` passes our environment on to the new window. cmd strips the outer quotes of `/k "..."` and runs the rest.
+      const safeTitle = title.replace(/["%^&|<>]/g, '');
+      const line = `/c start "${safeTitle}" /D "${cwd}" cmd /k${command ? ` "${command}"` : ''}`;
+      return launch('cmd.exe', [line], { windowsVerbatimArguments: true, env });
+    }
+    case 'darwin': {
+      // Terminal.app starts a fresh login shell, so the environment has to be part of the script.
+      const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
+      const exports = Object.entries(env).map(([k, v]) => `export ${k}=${q(v)}`).join('; ');
+      const sh = `cd ${q(cwd)}; ${exports}${command ? `; ${command}` : ''}`;
+      const script = `tell application "Terminal" to do script "${sh.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\ntell application "Terminal" to activate`;
+      return launch('osascript', ['-e', script]);
+    }
+    default: {
+      const args = command ? ['-e', 'sh', '-c', `${command}; exec "\${SHELL:-sh}"`] : [];
+      return launch('x-terminal-emulator', args, { cwd, env });
+    }
+  }
+}
+
+function launch(cmd: string, args: string[], opts: { cwd?: string; windowsVerbatimArguments?: boolean; env?: Record<string, string> } = {}) {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(cmd, args, { ...opts, detached: true, stdio: 'ignore', windowsHide: false });
+    const env = opts.env && { ...process.env, ...opts.env };
+    const child = spawn(cmd, args, { ...opts, env, detached: true, stdio: 'ignore', windowsHide: false });
     child.once('error', (err) => reject(new Error(`Could not open a terminal: ${err.message}`)));
     child.once('spawn', () => (child.unref(), resolve()));
   });

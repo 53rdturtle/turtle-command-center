@@ -59,11 +59,16 @@ export interface Project {
   permissionMode: string;
   alwaysAllow: string[];
   currentBranch: string | null;
+  /** Run by "Try it" in the task's worktree; empty opens a plain shell there. */
+  tryCommand: string;
+  suggestedTryCommand: string;
 }
 
 /** Fraction used (0-1); resetsAt is null once the window has reset since it was reported. */
 export interface UsageWindow { utilization: number; resetsAt: number | null }
 export interface AccountUsage { fiveHour: UsageWindow | null; sevenDay: UsageWindow | null; reportedAt: number }
+/** Environment "Try it" gave the terminal: free ports and a sandbox data dir, so a copy of this app can't clash with the board. */
+export interface TryEnv { TCC_PORT: string; TCC_DEV_PORT: string; TCC_DATA_DIR: string }
 
 export interface Account {
   id: number;
@@ -150,6 +155,7 @@ export const api = {
   done: (id: number) => call('POST', `/api/tasks/${id}/done`),
   discard: (id: number) => call('POST', `/api/tasks/${id}/discard`),
   openTerminal: (id: number) => call('POST', `/api/tasks/${id}/open-terminal`),
+  tryIt: (id: number) => call<TryEnv>('POST', `/api/tasks/${id}/try`),
   mergeable: (id: number) => call<{ mergeable: boolean }>('GET', `/api/tasks/${id}/mergeable`).then((r) => r.mergeable),
   merge: (id: number) => call('POST', `/api/tasks/${id}/merge`),
   cancelMerge: (id: number) => call('POST', `/api/tasks/${id}/merge/cancel`),
