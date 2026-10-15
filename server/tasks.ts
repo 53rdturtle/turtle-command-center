@@ -165,7 +165,7 @@ Rules:
 - Decide small things yourself. Ask before large, risky, or irreversible choices.
 - On your first turn, investigate (read the code, reproduce the problem, check constraints) and report findings plus a proposed plan. Don't make large changes before the user picks a direction, unless the task is trivial.
 - If the task is clearly too big for one session, with parts that can proceed independently in parallel, call propose_split with self-contained subtask prompts instead of report_checkpoint.
-- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board already shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, so a done checkpoint's options are only for optional follow-up work; an empty list is fine.`;
+- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board already shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, so a done checkpoint's options are only for optional follow-up work (don't mark any of them "(Recommended)"); an empty list is fine.`;
 }
 
 function initialPrompt(task: TaskRow) {

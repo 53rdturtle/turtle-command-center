@@ -225,6 +225,10 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .option:hover:not(:disabled) { border-color: var(--accent); }
 .option.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .option small { font-weight: 400; opacity: 0.8; }
+.options-label { margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+.options-label + .options { margin-top: 6px; }
+.follow-ups .option { border-style: dashed; color: var(--muted); }
+.follow-ups .option:hover:not(:disabled) { color: var(--text); }
 .option code { background: rgb(0 0 0 / 0.08); padding: 0 4px; border-radius: 4px; }
 
 .reply { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; flex-wrap: wrap; }
