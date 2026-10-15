@@ -8,6 +8,7 @@ import {
 } from './db.ts';
 import { CliRunner, type AccountUsage, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { openResumeTerminal } from './openTerminal.ts';
+import { cleanupTaskImages, sweepImages } from './images.ts';
 import {
   createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff,
   wasMerged,
@@ -413,6 +414,7 @@ async function repairWorktrees() {
 
 export async function recoverOnStartup() {
   await repairWorktrees();
+  cleanupImages(sweepImages); // also catches tasks finished before cleanup existed, and abandoned drafts
   // Finished tasks have nothing left to merge; older recovery code could leave their merge flags behind.
   db.prepare(`UPDATE tasks SET merge_state = NULL, merge_queued_at = NULL, merge_failure = NULL
     WHERE status IN ('done', 'discarded') AND (merge_state IS NOT NULL OR merge_failure IS NOT NULL)`).run();
@@ -727,10 +729,20 @@ const isFinished = (t: TaskRow) => t.status === 'done' || t.status === 'discarde
  * again to integrate the pieces. The check runs synchronously around the write, so concurrent calls
  * wake the parent exactly once per batch.
  */
+/** Image cleanup is housekeeping; it must never get in the way of finishing a task. */
+function cleanupImages(fn: () => void) {
+  try {
+    fn();
+  } catch (err) {
+    console.error('[images] cleanup failed:', err);
+  }
+}
+
 function finishTask(taskId: number, fields: Partial<TaskRow>) {
   const wasOpen = !isFinished(getTask(taskId)!);
   updateTask(taskId, fields);
   const task = getTask(taskId)!;
+  if (wasOpen && isFinished(task)) cleanupImages(() => cleanupTaskImages(taskId));
   if (!task.parent_id) return;
   updateTask(task.parent_id, {}); // refresh the parent's subtask progress
   if (!wasOpen) return;

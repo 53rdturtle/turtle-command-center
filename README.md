@@ -7,7 +7,8 @@ One page per project for supervising several Claude Code agents at once.
 - **Split**: when a task is too big, the agent proposes subtasks; edit them, approve, and they run in parallel.
 - **Permissions** show up as cards (Allow / Always allow / Deny).
 - **Screenshots**: paste (or drop) an image into a task's details or a reply. It's saved under `~/.turtle-cc/images` and
-  the message references it as `[Image: <path>]`; agents open it with their Read tool (that folder is passed via `--add-dir`).
+  the message references it as `[Image: <path>]`; agents open it with their Read tool (that folder is passed via `--add-dir`). When a task is done or discarded,
+  its images are deleted unless an open task still mentions them; on startup, unsent drafts' images older than a day go too.
 
 ## Run
 

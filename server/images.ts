@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DATA_DIR } from './config.ts';
+import { db } from './db.ts';
 
 // Images pasted into the board. Messages reference them as `[Image: <path>]`; agents get this
 // folder via --add-dir so they can view them with Read without a permission prompt.
@@ -32,4 +33,47 @@ export function readImage(name: string) {
   const ext = name.split('.').pop()!;
   const type = Object.keys(TYPES).find((t) => TYPES[t] === ext)!;
   return { bytes: readFileSync(file), type };
+}
+
+// ---------- cleanup ----------
+// An image is still needed while any open task mentions it: in its request, a prompt, or its transcript
+// (subtask prompts can repeat the parent's images). Once only finished tasks do, it's deleted.
+
+const REF = /\/images\/([0-9a-f-]{36}\.(?:png|jpg|gif|webp))/g;
+// Pasted into a draft that was never sent; give it a day before treating it as abandoned.
+const DRAFT_GRACE_MS = 24 * 60 * 60 * 1000;
+const OPEN = "status NOT IN ('done', 'discarded')";
+
+function refs(texts: (string | null)[]) {
+  const names = new Set<string>();
+  for (const t of texts) for (const m of t?.matchAll(REF) ?? []) names.add(m[1]);
+  return names;
+}
+
+function taskTexts(where: string, ...params: number[]) {
+  const like = "LIKE '%/images/%'";
+  const fields = db.prepare(`SELECT description || char(10) || coalesce(pending_prompt, '') || char(10) || coalesce(run_prompt, '')
+      || char(10) || coalesce(checkpoint, '') || char(10) || coalesce(split, '') AS text FROM tasks WHERE ${where}`)
+    .all(...params) as { text: string }[];
+  const events = db.prepare(`SELECT text FROM events WHERE text ${like} AND task_id IN (SELECT id FROM tasks WHERE ${where})`)
+    .all(...params) as { text: string }[];
+  return [...fields, ...events].map((r) => r.text);
+}
+
+function remove(names: Iterable<string>) {
+  for (const name of names) rmSync(join(IMAGES_DIR, name), { force: true });
+}
+
+/** Deletes the images a just-finished task used, unless an open task still mentions them. */
+export function cleanupTaskImages(taskId: number) {
+  const inUse = refs(taskTexts(OPEN));
+  remove([...refs(taskTexts('id = ?', taskId))].filter((n) => !inUse.has(n)));
+}
+
+/** Deletes every image no open task mentions, except recent ones that may belong to an unsent draft. */
+export function sweepImages() {
+  if (!existsSync(IMAGES_DIR)) return;
+  const inUse = refs(taskTexts(OPEN));
+  const cutoff = Date.now() - DRAFT_GRACE_MS;
+  remove(readdirSync(IMAGES_DIR).filter((n) => NAME.test(n) && !inUse.has(n) && statSync(join(IMAGES_DIR, n)).mtimeMs < cutoff));
 }
