@@ -434,12 +434,13 @@ function UsagePills() {
   const several = accounts.length > 1;
   return (
     <span className="usage-pills">
-      {accounts.map((a) => <AccountPill key={a.id} account={a} marked={several && a.active} />)}
+      {accounts.map((a) => <AccountPill key={a.id} account={a} marked={several && a.active} compact={several && !a.active} />)}
     </span>
   );
 }
 
-function AccountPill({ account: a, marked }: { account: Account; marked: boolean }) {
+/** Compact pills (accounts not in use) show just the 5-hour percentage; hover for the rest. */
+function AccountPill({ account: a, marked, compact }: { account: Account; marked: boolean; compact: boolean }) {
   const usage = a.usage;
   const title = [
     `${a.name}${marked ? ' (in use)' : ''}`,
@@ -448,6 +449,20 @@ function AccountPill({ account: a, marked }: { account: Account; marked: boolean
     usage?.sevenDay && `7-day: ${percent(usage.sevenDay)} used, ${resetLabel(usage.sevenDay)}`,
     usage ? `as of ${ago(usage.reportedAt)}` : 'No usage reported yet; it shows after a run on this account',
   ].filter(Boolean).join('\n');
+  if (compact) {
+    return (
+      <span className="slots usage-pill" title={title}>
+        <span className="usage-account">{a.name}</span>
+        {a.limitedUntil ? (
+          <span className="usage usage-limited">back {clock(a.limitedUntil)}</span>
+        ) : usage?.fiveHour ? (
+          <span className="usage">5h <span className="usage-pct">{percent(usage.fiveHour)}</span></span>
+        ) : (
+          <span className="usage">—</span>
+        )}
+      </span>
+    );
+  }
   return (
     <span className={`slots usage-pill${marked ? ' usage-pill-active' : ''}`} title={title}>
       <span className="usage-account">{a.name}</span>
