@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type StreamMessage, type Task } from './api.ts';
+import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type StreamMessage, type Task, type TaskTemplate } from './api.ts';
 import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
 import { ImageThumbs, useImageInput } from './images.tsx';
+import { ago } from './time.ts';
 import { duration, kTokens, totalTokens, usageBreakdown } from './usage.ts';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
@@ -10,8 +11,9 @@ export function App() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [slug, setSlug] = useState(slugFromPath);
   const [showAddProject, setShowAddProject] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showAccounts, setShowAccounts] = useState(false);
+  const [drawer, setDrawer] = useState<'settings' | 'accounts' | null>(null);
+  const toggleDrawer = (which: 'settings' | 'accounts') => setDrawer((d) => (d === which ? null : which));
+  const closeDrawer = useCallback(() => setDrawer(null), []);
 
   const reloadProjects = useCallback(() => api.projects().then(setProjects), []);
   useEffect(() => {
@@ -24,7 +26,7 @@ export function App() {
   const navigate = (next: string) => {
     history.pushState(null, '', `/p/${next}`);
     setSlug(next);
-    setShowSettings(false);
+    setDrawer((d) => (d === 'settings' ? null : d));
   };
   useEffect(() => {
     const onPop = () => setSlug(slugFromPath());
@@ -45,21 +47,26 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">🐢 <span>Turtle Command Center</span></div>
-        {projects && projects.length > 0 && (
-          <select className="project-picker" value={slug} onChange={(e) => navigate(e.target.value)} aria-label="Project">
-            {projects.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
-          </select>
-        )}
-        <button className="ghost" onClick={() => setShowAddProject(true)}>+ Project</button>
-        {project && <button className="ghost" onClick={() => setShowSettings((s) => !s)}>Settings</button>}
-        <button className="ghost" onClick={() => setShowAccounts((s) => !s)}>Accounts</button>
-        <span className="spacer" />
-        <BoardUpdate />
-        {project && <TodayUsage slug={project.slug} />}
-        <UsagePills />
-        <AgentSlots />
-        <NotifyToggle />
+        <div className="topbar-main">
+          <div className="brand">🐢 <span>Turtle Command Center</span></div>
+          {projects && projects.length > 0 && (
+            <select className="project-picker" value={slug} onChange={(e) => navigate(e.target.value)} aria-label="Project">
+              {projects.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
+            </select>
+          )}
+          <button className="ghost" onClick={() => setShowAddProject(true)}>+ Project</button>
+          {project && (
+            <button className="ghost toggle" aria-pressed={drawer === 'settings'} onClick={() => toggleDrawer('settings')}>Settings</button>
+          )}
+          <button className="ghost toggle" aria-pressed={drawer === 'accounts'} onClick={() => toggleDrawer('accounts')}>Accounts</button>
+        </div>
+        <div className="topbar-status">
+          <BoardUpdate />
+          {project && <TodayUsage slug={project.slug} />}
+          <UsagePills />
+          <AgentSlots />
+          <NotifyToggle />
+        </div>
       </header>
 
       {showAddProject && (
@@ -80,8 +87,8 @@ export function App() {
         </div>
       )}
 
-      {showAccounts && <Accounts />}
-      {project && showSettings && <ProjectSettings project={project} onSaved={reloadProjects} />}
+      {drawer === 'accounts' && <Accounts onClose={closeDrawer} />}
+      {project && drawer === 'settings' && <ProjectSettings project={project} onSaved={reloadProjects} onClose={closeDrawer} />}
       {project && <Board key={project.slug} project={project} />}
     </div>
   );
@@ -89,11 +96,15 @@ export function App() {
 
 function Board({ project }: { project: Project }) {
   const [tasks, setTasks] = useState<Map<number, Task>>(new Map());
+  const [loaded, setLoaded] = useState(false);
   const [showDone, setShowDone] = useState(() => localStorage.getItem('tcc.showDone') === '1');
   const toggleDone = () => setShowDone((s) => (localStorage.setItem('tcc.showDone', s ? '0' : '1'), !s));
 
   useEffect(() => {
-    api.tasks(project.slug).then((list) => setTasks(new Map(list.map((t) => [t.id, t]))));
+    api.tasks(project.slug).then((list) => {
+      setTasks(new Map(list.map((t) => [t.id, t])));
+      setLoaded(true);
+    });
     return onStream((m) => {
       if (m.type === 'task' && m.task.projectSlug === project.slug) {
         setTasks((prev) => {
@@ -107,17 +118,20 @@ function Board({ project }: { project: Project }) {
   }, [project.slug]);
 
   const all = [...tasks.values()];
-  const byUpdate = (a: Task, b: Task) => a.updatedAt - b.updatedAt;
-  const attention = all.filter(needsAttention).sort(byUpdate);
-  const working = all.filter((t) => !needsAttention(t) && !t.mergeState && ['running', 'queued', 'limited'].includes(t.status)).sort(byUpdate);
-  // Merging now, then the queue in order, then tasks whose agent is resolving conflicts before rejoining it.
-  const mergeOrder = (t: Task) => t.mergePosition ?? Infinity;
-  const mergeQueue = all.filter((t) => !needsAttention(t) && t.mergeState).sort((a, b) => mergeOrder(a) - mergeOrder(b) || byUpdate(a, b));
-  const parked = all.filter((t) => !needsAttention(t) && t.status === 'split');
-  const review = all.filter(agentDone).sort(byUpdate);
-  const done = all.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<Filter | null>(null);
+  const searching = query.trim() !== '';
+  const matched = searching ? all.filter(matches(query)) : all;
+  const unfiltered = group(all);
+  const { attention, running, waiting, mergeQueue, parked, review, done } = group(matched);
+  const workingCount = running.length + waiting.length + mergeQueue.length + parked.length;
+  const shown = (f: Filter) => !filter || filter === f;
+  const empty = (text: string) => (searching ? 'No matches.' : text);
+  const doneForced = done.length > 0 && (searching || filter === 'done');
 
-  useAttentionSignals(attention, review);
+  const limited = unfiltered.waiting.filter((t) => t.status === 'limited');
+
+  useAttentionSignals(project, loaded, unfiltered.attention, unfiltered.review, limited);
 
   const card = (t: Task) => (
     <CardErrorBoundary key={t.id} taskId={t.id}>
@@ -132,33 +146,142 @@ function Board({ project }: { project: Project }) {
     </CardErrorBoundary>
   );
 
+  const actionColumn = shown('attention') || shown('review');
+  const workingColumn = shown('working');
   return (
     <main className="board">
       <NewTask project={project} />
-      <div className="columns">
-        <div className="column">
-          <h1 className="column-title">Action required <span className="count">{attention.length + review.length}</span></h1>
-          <Section title="Needs you" count={attention.length} empty="Nothing waiting on you. 🎉">{attention.map(card)}</Section>
-          {review.length > 0 && <Section title="Ready for review" count={review.length}>{review.map(card)}</Section>}
-        </div>
-        <div className="column">
-          <h1 className="column-title">Working <span className="count">{working.length + mergeQueue.length + parked.length}</span></h1>
-          <Section title="Running" count={working.length} empty="No agents running.">{working.map(card)}</Section>
-          {mergeQueue.length > 0 && (
-            <Section title={`Merging into ${project.currentBranch ?? 'your branch'}`} count={mergeQueue.length}>{mergeQueue.map(card)}</Section>
+      <FilterBar
+        query={query}
+        onQuery={setQuery}
+        filter={filter}
+        onFilter={setFilter}
+        counts={{ attention: attention.length, working: workingCount, review: review.length, done: done.length }}
+      />
+      {(actionColumn || workingColumn) && (
+        <div className={`columns${actionColumn && workingColumn ? '' : ' single'}`}>
+          {actionColumn && (
+            <div className="column">
+              <h1 className="column-title">Action required <span className="count">{(shown('attention') ? attention.length : 0) + (shown('review') ? review.length : 0)}</span></h1>
+              {shown('attention') && <Section title="Needs you" count={attention.length} empty={empty('Nothing waiting on you. 🎉')}>{attention.map(card)}</Section>}
+              {shown('review') && (review.length > 0 || filter === 'review') && (
+                <Section title="Ready for review" count={review.length} empty={empty('Nothing to review.')}>{review.map(card)}</Section>
+              )}
+            </div>
           )}
-          {parked.length > 0 && <Section title="Split into subtasks" count={parked.length}>{parked.map(card)}</Section>}
+          {workingColumn && (
+            <div className="column">
+              <h1 className="column-title">Working <span className="count">{workingCount}</span></h1>
+              <Section title="Running" count={running.length} empty={empty('No agents running.')}>{running.map(card)}</Section>
+              {waiting.length > 0 && <Section title="Waiting" count={waiting.length}>{waiting.map(card)}</Section>}
+              {mergeQueue.length > 0 && (
+                <Section title={`Merging into ${project.currentBranch ?? 'your branch'}`} count={mergeQueue.length}>{mergeQueue.map(card)}</Section>
+              )}
+              {parked.length > 0 && <Section title="Split into subtasks" count={parked.length}>{parked.map(card)}</Section>}
+            </div>
+          )}
         </div>
-      </div>
-      {done.length > 0 && (
+      )}
+      {shown('done') && (done.length > 0 || filter === 'done') && (
         <section className="section">
-          <button className="section-toggle" onClick={toggleDone}>
-            {showDone ? '▾' : '▸'} Done <span className="count">{done.length}</span>
-          </button>
-          {showDone && <div className="cards">{done.map(card)}</div>}
+          {doneForced ? (
+            <h2>Done <span className="count">{done.length}</span></h2>
+          ) : (
+            <button className="section-toggle" onClick={toggleDone} disabled={done.length === 0}>
+              {showDone ? '▾' : '▸'} Done <span className="count">{done.length}</span>
+            </button>
+          )}
+          {filter === 'done' && done.length === 0 && <p className="muted">{empty('Nothing done yet.')}</p>}
+          {(showDone || doneForced) && <div className="cards">{done.map(card)}</div>}
         </section>
       )}
     </main>
+  );
+}
+
+type Filter = 'attention' | 'working' | 'review' | 'done';
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: 'attention', label: 'Needs me' },
+  { key: 'working', label: 'Working' },
+  { key: 'review', label: 'Ready' },
+  { key: 'done', label: 'Done' },
+];
+
+/** Sorts tasks into the board's sections. */
+function group(all: Task[]) {
+  const byUpdate = (a: Task, b: Task) => a.updatedAt - b.updatedAt;
+  // Merging now, then the queue in order, then tasks whose agent is resolving conflicts before rejoining it.
+  const mergeOrder = (t: Task) => t.mergePosition ?? Infinity;
+  return {
+    attention: all.filter(needsAttention).sort(byUpdate),
+    running: all.filter((t) => !needsAttention(t) && !t.mergeState && t.status === 'running').sort(byUpdate),
+    waiting: all.filter((t) => !needsAttention(t) && !t.mergeState && ['queued', 'limited'].includes(t.status)).sort(byUpdate),
+    mergeQueue: all.filter((t) => !needsAttention(t) && t.mergeState).sort((a, b) => mergeOrder(a) - mergeOrder(b) || byUpdate(a, b)),
+    parked: all.filter((t) => !needsAttention(t) && t.status === 'split'),
+    review: all.filter(agentDone).sort(byUpdate),
+    done: all.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt),
+  };
+}
+
+/** Every word of the query must appear in the task's number, title, description or latest checkpoint summary. */
+const matches = (query: string) => {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return (t: Task) => {
+    const text = `#${t.id} ${t.title} ${t.description} ${t.checkpoint?.summary ?? ''}`.toLowerCase();
+    return words.every((w) => text.includes(w));
+  };
+};
+
+const typingIn = (el: Element | null) =>
+  el instanceof HTMLElement && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName));
+
+function FilterBar({ query, onQuery, filter, onFilter, counts }: {
+  query: string;
+  onQuery: (q: string) => void;
+  filter: Filter | null;
+  onFilter: (f: Filter | null) => void;
+  counts: Record<Filter, number>;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !typingIn(document.activeElement)) {
+        e.preventDefault();
+        input.current?.focus();
+      }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, []);
+
+  return (
+    <div className="filter-bar">
+      <input
+        ref={input}
+        type="search"
+        value={query}
+        onChange={(e) => onQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== 'Escape') return;
+          e.preventDefault();
+          if (query) onQuery('');
+          else e.currentTarget.blur();
+        }}
+        placeholder="Search tasks…  ( / )"
+        aria-label="Search tasks"
+      />
+      {FILTERS.map(({ key, label }) => (
+        <button
+          key={key}
+          type="button"
+          className={`chip${filter === key ? ' chip-on' : ''}`}
+          aria-pressed={filter === key}
+          onClick={() => onFilter(filter === key ? null : key)}
+        >
+          {label} <span className="count">{counts[key]}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -176,9 +299,38 @@ function NewTask({ project }: { project: Project }) {
   const [description, setDescription] = useState('');
   const [model, setModel] = useState(project.defaultModel);
   const [expanded, setExpanded] = useState(false);
+  const [descFocused, setDescFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const images = useImageInput(setDescription);
+
+  useEffect(() => {
+    api.templates(project.slug).then(setTemplates).catch(() => setTemplates([]));
+  }, [project.slug]);
+  // The template whose title is typed in, if any: saving updates it, and it can be deleted.
+  const current = templates.find((t) => t.title === title.trim());
+
+  // One menu for templates keeps the form to a single extra control.
+  const onTemplate = async (value: string) => {
+    setError(null);
+    try {
+      if (value === 'save') {
+        setTemplates(await api.saveTemplate(project.slug, { title, description }));
+      } else if (value === 'delete' && current) {
+        if (confirm(`Delete template "${current.title}"?`)) setTemplates(await api.deleteTemplate(project.slug, current.id));
+      } else {
+        const t = templates.find((t) => String(t.id) === value);
+        if (t) {
+          setTitle(t.title);
+          setDescription(t.description);
+          setExpanded(true);
+        }
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
 
   const submit = async () => {
     if (!title.trim() || images.uploading) return;
@@ -206,6 +358,13 @@ function NewTask({ project }: { project: Project }) {
           placeholder={`New task for ${project.name}…`}
           aria-label="Task title"
         />
+        <select className="templates" value="" onChange={(e) => onTemplate(e.target.value)} aria-label="Templates">
+          <option value="" disabled hidden>Templates</option>
+          {templates.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+          {templates.length > 0 && <option value="-" disabled>──────────</option>}
+          <option value="save" disabled={!title.trim()}>{current ? 'Update template' : 'Save as template'}</option>
+          {current && <option value="delete">Delete template</option>}
+        </select>
         <select value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model">
           {MODELS.map((m) => <option key={m}>{m}</option>)}
         </select>
@@ -218,9 +377,13 @@ function NewTask({ project }: { project: Project }) {
           onChange={(e) => setDescription(e.target.value)}
           onKeyDown={enterToSubmit(submit)}
           {...images.handlers}
-          placeholder="Details, context, links, pasted screenshots… (optional, Enter to start, Ctrl+Enter for new line)"
+          onFocus={() => setDescFocused(true)}
+          onBlur={() => setDescFocused(false)}
+          placeholder="Details (optional)…"
+          aria-label="Task details"
         />
       )}
+      {expanded && descFocused && <small className="key-hint">Enter to start, Ctrl+Enter for new line. Paste screenshots here.</small>}
       {expanded && <ImageThumbs text={description} uploading={images.uploading} error={images.error} />}
       {error && <p className="error">{error}</p>}
     </form>
@@ -284,11 +447,37 @@ function AddProject({ onClose, onAdded }: { onClose: () => void; onAdded: (p: Pr
   );
 }
 
-function ProjectSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {
+/**
+ * A side panel over the board. Closes on ×, Escape, or a click outside it. Blurs the focused field first so
+ * save-on-blur inputs still save.
+ */
+function Drawer({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  const close = useCallback(() => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    onClose();
+  }, [onClose]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close();
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [close]);
+  return (
+    <div className="drawer-backdrop" onClick={(e) => e.target === e.currentTarget && close()}>
+      <aside className="drawer panel" role="dialog" aria-label={title}>
+        <div className="drawer-head">
+          <h2>{title}</h2>
+          <button className="ghost close" aria-label="Close" title="Close (Esc)" onClick={close}>×</button>
+        </div>
+        {children}
+      </aside>
+    </div>
+  );
+}
+
+function ProjectSettings({ project, onSaved, onClose }: { project: Project; onSaved: () => void; onClose: () => void }) {
   const save = (patch: Partial<Project>) => api.updateProject(project.slug, patch).then(onSaved);
   return (
-    <section className="panel">
-      <h2>{project.name} settings</h2>
+    <Drawer title={`${project.name} settings`} onClose={onClose}>
       <p className="muted mono">{project.path}{project.remote && <> · {project.remote}</>}</p>
       <div className="row">
         <label>Default model
@@ -329,14 +518,14 @@ function ProjectSettings({ project, onSaved }: { project: Project; onSaved: () =
           ))}
         </ul>
       )}
-    </section>
+    </Drawer>
   );
 }
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 /** Claude subscriptions to run agents on. When one hits its usage limit, tasks continue on the next. */
-function Accounts() {
+function Accounts({ onClose }: { onClose: () => void }) {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [form, setForm] = useState({ name: '', token: '' });
   const [error, setError] = useState<string | null>(null);
@@ -358,8 +547,7 @@ function Accounts() {
   };
 
   return (
-    <section className="panel">
-      <h2>Accounts</h2>
+    <Drawer title="Accounts" onClose={onClose}>
       <p className="muted">
         Agents run on the first account below that has usage left. When it hits its limit, its tasks resume the same
         session on the next one.
@@ -400,15 +588,11 @@ function Accounts() {
         this machine's command-center database only.
       </p>
       {error && <p className="error">{error}</p>}
-    </section>
+    </Drawer>
   );
 }
 
 const percent = (w: UsageWindow) => `${Math.round(w.utilization * 100)}%`;
-const ago = (ms: number) => {
-  const min = Math.round((Date.now() - ms) / 60_000);
-  return min < 1 ? 'just now' : min < 60 ? `${min}m ago` : `${Math.round(min / 60)}h ago`;
-};
 const resetLabel = (w: UsageWindow) => {
   if (!w.resetsAt) return 'reset since last report';
   const sameDay = new Date(w.resetsAt).toDateString() === new Date().toDateString();
@@ -598,32 +782,76 @@ function AgentSlots() {
   );
 }
 
+const notifySupported = typeof Notification !== 'undefined';
+const notifyWanted = () => localStorage.getItem('tcc.notify') === '1';
+
 function NotifyToggle() {
-  const [perm, setPerm] = useState(typeof Notification === 'undefined' ? 'denied' : Notification.permission);
-  if (perm !== 'default') return null;
-  return <button className="ghost" onClick={() => Notification.requestPermission().then(setPerm)}>Enable notifications</button>;
+  const [perm, setPerm] = useState(notifySupported ? Notification.permission : 'denied');
+  const [wanted, setWanted] = useState(notifyWanted);
+  if (!notifySupported) return null;
+  const on = wanted && perm === 'granted';
+  const toggle = async () => {
+    const next = !on && perm === 'default' ? await Notification.requestPermission() : perm;
+    setPerm(next);
+    const keep = !on && next === 'granted';
+    localStorage.setItem('tcc.notify', keep ? '1' : '0');
+    setWanted(keep);
+  };
+  const title = perm === 'denied' ? 'Notifications are blocked for this site. Allow them in the site settings of your browser.'
+    : on ? 'Desktop notifications on: you get one when a task needs you and this tab is in the background. Click to turn off.'
+    : 'Turn on desktop notifications for tasks that need you';
+  return (
+    <button className={`ghost bell${on ? ' on' : ''}`} onClick={toggle} disabled={perm === 'denied'} title={title} aria-pressed={on} aria-label="Desktop notifications">
+      {on ? '🔔' : '🔕'}
+    </button>
+  );
 }
 
-/** Tab-title badge for tasks that need you, plus a desktop notification when one newly needs you or an agent finishes. */
-function useAttentionSignals(attention: Task[], finished: Task[]) {
-  const seen = useRef<Set<string> | null>(null);
-  const notify = useMemo(() => [...attention, ...finished], [attention, finished]);
+/** Scroll to a card and flash it, e.g. after clicking its notification. */
+function revealCard(id: number) {
+  const el = document.getElementById(`task-${id}`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+}
+
+function notifyBody(t: Task) {
+  if (t.permissions.length) return `Wants to use ${t.permissions[0].toolName}`;
+  if (t.status === 'split_proposed') return 'Proposes splitting into subtasks';
+  if (t.status === 'failed') return t.error ? `Failed: ${t.error}` : 'Failed';
+  if (t.status === 'limited') return 'Hit a usage limit; will retry when it resets';
+  if (t.mergeFailure) return 'Merge needs your help';
+  return t.checkpoint?.summary ?? 'Needs your input';
+}
+
+/**
+ * Tab-title badge for tasks that need you, plus a desktop notification when one newly needs you,
+ * an agent finishes or hits a limit. Tasks already in the set when the board loads stay quiet.
+ */
+function useAttentionSignals(project: Project, loaded: boolean, attention: Task[], finished: Task[], limited: Task[]) {
+  const seen = useRef<Set<number> | null>(null);
+  const notify = useMemo(() => [...attention, ...finished, ...limited], [attention, finished, limited]);
   const keys = useMemo(() => notify.map((t) => `${t.id}:${t.updatedAt}`), [notify]);
 
   useEffect(() => {
     document.title = attention.length ? `(${attention.length}) Turtle Command Center` : 'Turtle Command Center';
-    const current = new Set(notify.map((t) => String(t.id)));
-    if (seen.current && typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
+    if (!loaded) return;
+    const current = new Set(notify.map((t) => t.id));
+    const away = document.hidden || !document.hasFocus();
+    if (seen.current && away && notifySupported && Notification.permission === 'granted' && notifyWanted()) {
       for (const t of notify) {
-        if (!seen.current.has(String(t.id))) {
-          new Notification(`#${t.id} ${t.title}`, {
-            body: t.permissions.length ? `Wants to use ${t.permissions[0].toolName}` : t.checkpoint?.summary.slice(0, 140) ?? 'Needs your input',
-            tag: `tcc-${t.id}`,
-          });
-        }
+        if (seen.current.has(t.id)) continue;
+        const n = new Notification(`${project.name}: #${t.id} ${t.title}`, { body: notifyBody(t).slice(0, 180), tag: `tcc-${t.id}` });
+        n.onclick = () => {
+          focus();
+          n.close();
+          revealCard(t.id);
+        };
       }
     }
     seen.current = current;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keys.join(), attention.length]);
+  }, [keys.join(), attention.length, loaded]);
 }

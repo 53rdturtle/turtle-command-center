@@ -88,6 +88,14 @@ CREATE TABLE IF NOT EXISTS runs (
   cost_usd REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS runs_by_project ON runs(project_id, ended_at);
+CREATE TABLE IF NOT EXISTS task_templates (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  UNIQUE (project_id, title)
+);
 `);
 
 if (!db.prepare('SELECT 1 FROM accounts LIMIT 1').get()) {
@@ -186,6 +194,16 @@ export const getProjectBySlug = (slug: string) =>
   db.prepare('SELECT * FROM projects WHERE slug = ?').get(slug) as ProjectRow | undefined;
 export const listProjects = () =>
   db.prepare('SELECT * FROM projects ORDER BY name').all() as unknown as ProjectRow[];
+
+export interface TemplateRow { id: number; project_id: number; title: string; description: string; created_at: number }
+export const listTemplates = (projectId: number) =>
+  db.prepare('SELECT * FROM task_templates WHERE project_id = ? ORDER BY title COLLATE NOCASE').all(projectId) as unknown as TemplateRow[];
+/** Saving under an existing title replaces that template's description. */
+export const saveTemplate = (projectId: number, title: string, description: string) =>
+  db.prepare(`INSERT INTO task_templates (project_id, title, description, created_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(project_id, title) DO UPDATE SET description = excluded.description`).run(projectId, title, description, Date.now());
+export const deleteTemplate = (projectId: number, id: number) =>
+  db.prepare('DELETE FROM task_templates WHERE id = ? AND project_id = ?').run(id, projectId);
 
 export const getTask = (id: number) =>
   db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;

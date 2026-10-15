@@ -1,7 +1,8 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
-import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
+import { ago, elapsed, useNow } from './time.ts';
+import { agentDone, api, MODELS, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 import { duration, kTokens, totalTokens, usageBreakdown } from './usage.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
@@ -60,6 +61,17 @@ function useMergeable(task: Task, targetBranch: string | null) {
 
 type CardProps = { task: Task; parent?: Task; children: Task[]; targetBranch: string | null; defaultModel: string; tryCommand?: string };
 
+/** How long since the card last changed: how long it has waited on you, or when a running agent last did something. */
+function CardAge({ task }: { task: Task }) {
+  const now = useNow();
+  const waiting = task.permissions.length > 0 || task.status === 'needs_input' || task.status === 'split_proposed';
+  const label =
+    task.status === 'running' ? `active ${ago(task.updatedAt, now)}`
+    : waiting ? `waiting ${elapsed(task.updatedAt, now)}`
+    : ago(task.updatedAt, now);
+  return <span className="card-age muted" title={new Date(task.updatedAt).toLocaleString()}>{label}</span>;
+}
+
 export function TaskCard({ task, parent, children, targetBranch, defaultModel, tryCommand = '' }: CardProps) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [showChanges, setShowChanges] = useState(false);
@@ -67,7 +79,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
   const [copied, setCopied] = useState(false);
   const [tried, setTried] = useState<TryEnv | null>(null);
   const { busy, error, run } = useAction();
-  const status = task.permissions.length ? 'permission' : task.status;
+  const status = task.permissions.length ? 'permission' : agentDone(task) ? 'review' : task.status;
   const active = task.status === 'running' || task.status === 'queued';
   const canMerge = useMergeable(task, targetBranch);
   const hasWorktree = Boolean(task.branch && task.worktree);
@@ -108,21 +120,24 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
   const doneInMenu = !active && task.status !== 'done' && task.mergeState !== 'merging' && primary?.label !== 'Mark done';
 
   return (
-    <article className={`card status-${status}`}>
+    <article id={`task-${task.id}`} className={`card status-${status}`}>
       <header className="card-head">
         <div className="card-title">
           <span className="task-id" title={info || undefined}>#{task.id}</span>
           <h3>{task.title}</h3>
         </div>
-        <span className={`pill pill-${status}`}>
+        <div className="card-status">
+          <CardAge task={task} />
+          <span className={`pill pill-${status}`}>
           {(status === 'running' || task.mergeState === 'merging') && <span className="spinner" />}
-          {task.permissions.length ? 'Permission' : task.mergeState ? MERGE_LABEL[task.mergeState] : STATUS_LABEL[task.status]}
-        </span>
+            {task.permissions.length ? 'Permission' : task.mergeState ? MERGE_LABEL[task.mergeState] : status === 'review' ? 'Ready for review' : STATUS_LABEL[task.status]}
+          </span>
+        </div>
       </header>
 
       <div className="meta">
         {parent && <span className="chip">↳ from #{parent.id} {parent.title}</span>}
-        {task.model !== defaultModel && <span className="chip" title="Differs from the project's default model">{task.model}</span>}
+        <span className={task.model === defaultModel ? 'chip chip-faint' : 'chip'} title={task.model === defaultModel ? 'Model (project default)' : "Model (differs from the project's default)"}>{task.model}</span>
         {hasDiff && diff.data && (
           <button className="chip chip-button mono" onClick={() => setShowChanges((s) => !s)} title={`${showChanges ? 'Hide' : 'Show'} changes relative to ${diff.data.target}`}>
             {showChanges ? '▾' : '▸'} <span className="add">+{diff.data.additions}</span> <span className="del">−{diff.data.deletions}</span> · {diff.data.files.length} file{diff.data.files.length === 1 ? '' : 's'}
@@ -291,7 +306,7 @@ function Body({ task, children, boardAction }: { task: Task; children: Task[]; b
           <ul className="subtask-status">
             {children.map((c) => <li key={c.id}>#{c.id} {c.title} <span className={`pill pill-${c.status} small`}>{STATUS_LABEL[c.status]}</span></li>)}
           </ul>
-          <ReplyBox taskId={task.id} placeholder="Message the parent session (e.g. 'Subtasks are done, integrate and verify')…" />
+          <ReplyBox task={task} placeholder="Message the parent session…" />
         </div>
       );
     case 'done':
@@ -326,8 +341,10 @@ function Summary({ checkpoint }: { checkpoint: Checkpoint }) {
 function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActionFn }) {
   const cp = task.checkpoint!;
   const { busy, error, run } = useAction();
+  // One model choice covers both the option buttons and the typed reply.
+  const [model, setModel] = useState(task.model);
   const options = cp.options
-    .map((o) => ({ ...o, onClick: o.action ? boardAction(o.action) : () => run(() => api.reply(task.id, o.label)) }))
+    .map((o) => ({ ...o, onClick: o.action ? boardAction(o.action) : () => run(() => api.reply(task.id, o.label, model)) }))
     .filter((o) => o.onClick);
   return (
     <div>
@@ -346,7 +363,7 @@ function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActio
         </div>
       )}
       {error && <p className="error">{error}</p>}
-      <ReplyBox taskId={task.id} />
+      <ReplyBox task={task} model={model} setModel={setModel} />
     </div>
   );
 }
@@ -367,26 +384,42 @@ export function enterToSubmit(submit: () => void) {
   };
 }
 
-function ReplyBox({ taskId, placeholder = 'Reply in your own words or paste a screenshot…  (Enter to send, Ctrl+Enter for new line)' }: { taskId: number; placeholder?: string }) {
+type ReplyBoxProps = { task: Task; placeholder?: string; model?: string; setModel?: (m: string) => void };
+
+// Starts as one line and grows while focused or holding a draft, so cards waiting on you stay short.
+function ReplyBox({ task, placeholder = 'Reply…', ...lifted }: ReplyBoxProps) {
   const [text, setText] = useState('');
+  const [focused, setFocused] = useState(false);
+  const [ownModel, setOwnModel] = useState(task.model);
+  const [model, setModel] = lifted.setModel ? [lifted.model!, lifted.setModel] : [ownModel, setOwnModel];
   const { busy, error, run } = useAction();
   const images = useImageInput(setText);
   const send = () => text.trim() && !images.uploading && run(async () => {
-    await api.reply(taskId, text);
+    await api.reply(task.id, text, model);
     setText('');
   });
+  const expanded = focused || text !== '';
   return (
-    <div className="reply">
+    // Keeping focus on button presses stops the box collapsing (and the button moving) mid-click.
+    <div className={expanded ? 'reply expanded' : 'reply'} onMouseDown={(e) => (e.target as HTMLElement).closest('button') && e.preventDefault()}>
       <textarea
-        rows={2}
+        rows={expanded ? 3 : 1}
         value={text}
         placeholder={placeholder}
+        aria-label="Reply"
         onChange={(e) => setText(e.target.value)}
         onKeyDown={enterToSubmit(send)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         {...images.handlers}
       />
       <AttachImage images={images} />
+      <select className="model-select" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model for the next run"
+        title={model === task.model ? 'Model for the next run' : `Switches this task from ${task.model} to ${model} when you send`}>
+        {MODELS.map((m) => <option key={m}>{m}</option>)}
+      </select>
       <button disabled={busy || images.uploading || !text.trim()} onClick={send}>Send</button>
+      {focused && <small className="key-hint">Enter to send, Ctrl+Enter for new line. Paste or attach screenshots.</small>}
       <ImageThumbs text={text} uploading={images.uploading} error={images.error} />
       {error && <p className="error">{error}</p>}
     </div>

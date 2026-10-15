@@ -6,7 +6,9 @@ import { streamSSE } from 'hono/streaming';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { PORT } from './config.ts';
-import { db, getMaxConcurrent, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
+import {
+  db, deleteTemplate, getMaxConcurrent, getProjectBySlug, listEvents, listProjects, listTasks, listTemplates, saveTemplate, type ProjectRow, type TemplateRow,
+} from './db.ts';
 import { localOnly } from './guard.ts';
 import { boardVersion, startUpdate } from './selfUpdate.ts';
 import { pickFolder } from './pickFolder.ts';
@@ -105,15 +107,42 @@ app.post('/api/projects/:slug/tasks', async (c) => {
   return c.json(toDto(createTask(project, { title: title.trim(), description, model })));
 });
 
+// ---------- task templates ----------
+
+const templatesDto = (projectId: number) =>
+  listTemplates(projectId).map((t: TemplateRow) => ({ id: t.id, title: t.title, description: t.description }));
+
+app.get('/api/projects/:slug/templates', (c) => {
+  const project = getProjectBySlug(c.req.param('slug'));
+  if (!project) return c.json({ error: 'Project not found' }, 404);
+  return c.json(templatesDto(project.id));
+});
+
+app.post('/api/projects/:slug/templates', async (c) => {
+  const project = getProjectBySlug(c.req.param('slug'));
+  if (!project) return c.json({ error: 'Project not found' }, 404);
+  const { title, description } = await c.req.json();
+  if (typeof title !== 'string' || !title.trim()) throw new Error('Title is required');
+  saveTemplate(project.id, title.trim(), typeof description === 'string' ? description : '');
+  return c.json(templatesDto(project.id));
+});
+
+app.delete('/api/projects/:slug/templates/:id', (c) => {
+  const project = getProjectBySlug(c.req.param('slug'));
+  if (!project) return c.json({ error: 'Project not found' }, 404);
+  deleteTemplate(project.id, Number(c.req.param('id')));
+  return c.json(templatesDto(project.id));
+});
+
 const taskId = (c: { req: { param: (k: string) => string } }) => Number(c.req.param('id'));
 
 app.get('/api/tasks/:id/events', (c) => c.json(listEvents(taskId(c))));
 app.get('/api/tasks/:id/diff', async (c) => c.json(await diff(taskId(c))));
 
 app.post('/api/tasks/:id/reply', async (c) => {
-  const { text } = await c.req.json();
+  const { text, model } = await c.req.json();
   if (!text?.trim()) throw new Error('Reply is empty');
-  reply(taskId(c), text.trim());
+  reply(taskId(c), text.trim(), model);
   return c.json({ ok: true });
 });
 
