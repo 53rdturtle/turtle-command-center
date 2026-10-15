@@ -9,7 +9,7 @@ import { MAX_CONCURRENT, PORT } from './config.ts';
 import { db, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
-  answerPermission, approveSplit, createTask, discard, markDone, recoverOnStartup,
+  answerPermission, approveSplit, createTask, diff, discard, markDone, recoverOnStartup,
   merge, openInTerminal, reply, retry, runningCount, stop, subscribe, toDto,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
@@ -75,6 +75,7 @@ app.post('/api/projects/:slug/tasks', async (c) => {
 const taskId = (c: { req: { param: (k: string) => string } }) => Number(c.req.param('id'));
 
 app.get('/api/tasks/:id/events', (c) => c.json(listEvents(taskId(c))));
+app.get('/api/tasks/:id/diff', async (c) => c.json(await diff(taskId(c))));
 
 app.post('/api/tasks/:id/reply', async (c) => {
   const { text } = await c.req.json();

@@ -7,7 +7,7 @@ import {
 } from './db.ts';
 import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { openResumeTerminal } from './openTerminal.ts';
-import { createWorktree, discardWorktree, mergeTaskBranch, saveAndRemoveWorktree } from './worktree.ts';
+import { createWorktree, discardWorktree, mergeTaskBranch, saveAndRemoveWorktree, taskDiff } from './worktree.ts';
 
 /**
  * Agent runs are detached processes and the database is the source of truth, so this server can
@@ -343,6 +343,13 @@ export async function merge(taskId: number) {
     addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
   }
   return result;
+}
+
+export async function diff(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (!task.branch || !task.worktree) throw new Error('This task has no worktree to diff');
+  return taskDiff(getProject(task.project_id)!.path, task.worktree);
 }
 
 export async function discard(taskId: number) {

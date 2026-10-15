@@ -251,3 +251,33 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 button.link { background: none; border: none; padding: 0; color: var(--accent); font-size: 12px; cursor: pointer; }
 button.link:hover { text-decoration: underline; }
 .summary .details { margin-top: 6px; padding: 8px 10px; border-left: 2px solid var(--border); color: var(--muted); font-size: 13px; }
+
+.add { color: var(--accent); }
+.del { color: var(--danger); }
+button.chip-button { border: none; cursor: pointer; font-weight: 400; }
+button.chip-button:hover { color: var(--text); }
+
+.changes { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 10px; display: grid; gap: 8px; }
+.changes-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.changes-head code { background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
+.warn-note { margin: 0; background: var(--warn-soft); color: var(--warn); border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+.diff-file { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.diff-file-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: var(--surface-2); color: var(--text); border: none; border-radius: 0;
+  padding: 5px 10px; font-weight: 400; text-align: left;
+}
+.caret { color: var(--muted); width: 10px; }
+.diff-status { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--muted); }
+.diff-status.st-A { color: var(--accent); }
+.diff-status.st-D { color: var(--danger); }
+.diff-status.st-R { color: var(--info); }
+.diff-path { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.diff-counts { white-space: nowrap; }
+.diff-omitted { padding: 6px 10px; font-size: 13px; }
+.diff-lines { white-space: pre; overflow-x: auto; max-height: 480px; overflow-y: auto; padding: 4px 0; font-size: 12px; line-height: 1.45; }
+.dl { padding: 0 10px; min-width: max-content; }
+.dl.add { background: var(--accent-soft); color: var(--text); }
+.dl.del { background: var(--danger-soft); color: var(--text); }
+.dl.hunk { color: var(--info); background: var(--info-soft); }
+.dl.note { color: var(--muted); }
