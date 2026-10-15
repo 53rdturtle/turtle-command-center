@@ -368,7 +368,7 @@ function finish(taskId: number, result: RunResult) {
     updateTask(taskId, base);
   } else if (result.usageLimited) {
     const limited = task.account_id ? getAccount(task.account_id) : undefined;
-    if (limited) db.prepare('UPDATE accounts SET limited_until = ? WHERE id = ?').run(limitResetAt(result.resultText), limited.id);
+    if (limited) db.prepare('UPDATE accounts SET limited_until = ? WHERE id = ?').run(result.limitResetsAt ?? limitResetAt(result.resultText), limited.id);
     const pending_prompt = task.started ? 'You were interrupted by a usage limit. Continue where you left off.' : task.run_prompt;
     const fallback = availableAccount();
     if (fallback) {

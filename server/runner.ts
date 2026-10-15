@@ -47,6 +47,8 @@ export interface RunResult {
   resultText: string;
   isError: boolean;
   usageLimited: boolean;
+  /** When the usage limit that stopped the run resets (ms), if the CLI said. */
+  limitResetsAt: number | null;
   /** The process ended without reporting a result (crashed, killed, or the machine restarted). */
   interrupted: boolean;
 }
@@ -71,7 +73,27 @@ export interface AgentRunner {
 
 const LIMIT_PATTERN = /usage limit|limit reached|rate limit|resets? (at|in)|out of (extra )?usage/i;
 const MCP_SCRIPT = resolve(import.meta.dirname, 'mcp-stdio.mjs');
+// The CLI's own limit message, e.g. "You've hit your session limit · resets 7:40pm". It can arrive as a non-error result.
+const LIMIT_MESSAGE = /^you['’]ve hit your\b.*\blimit/i;
 const POLL_MS = 300;
+// After its result, the CLI still waits for background commands the agent started (e.g. a dev server) before exiting.
+const EXIT_GRACE_MS = 15_000;
+
+/** Whether the run's last `rate_limit_event` rejected it, and when that limit resets. Read once, when the run ends. */
+function rejectedLimit(log: string): { resetsAt: number | null } | null {
+  if (!existsSync(log)) return null;
+  let last: any = null;
+  for (const line of readFileSync(log, 'utf8').split('\n')) {
+    if (!line.includes('"rate_limit_event"')) continue;
+    try {
+      last = JSON.parse(line).rate_limit_info;
+    } catch {
+      /* partial line */
+    }
+  }
+  if (last?.status !== 'rejected') return null;
+  return { resetsAt: typeof last.resetsAt === 'number' ? last.resetsAt * 1000 : null };
+}
 
 function describeTool(name: string, input: Record<string, unknown>): string {
   const pick = input.command ?? input.file_path ?? input.pattern ?? input.url ?? input.query ?? input.description;
@@ -172,7 +194,8 @@ export class CliRunner implements AgentRunner {
 
   attach(ref: RunRef, startOffset: number, handlers: RunHandlers) {
     let offset = startOffset;
-    let result: Omit<RunResult, 'interrupted' | 'usageLimited'> | undefined;
+    let result: Omit<RunResult, 'interrupted' | 'usageLimited' | 'limitResetsAt'> | undefined;
+    let resultAt = 0;
     let finished = false;
     let lastContext = -1;
 
@@ -204,6 +227,7 @@ export class CliRunner implements AgentRunner {
             resultText: typeof msg.result === 'string' ? msg.result : '',
             isError: Boolean(msg.is_error),
           };
+          resultAt ||= Date.now();
           break;
         }
         if (msg?.type === 'system' && msg.subtype === 'init' && msg.session_id) {
@@ -237,12 +261,19 @@ export class CliRunner implements AgentRunner {
       if (finished) return;
       try {
         drain();
-        if (isAlive(ref.pid)) return;
+        if (isAlive(ref.pid)) {
+          // The turn is over; stop whatever it left running so the task doesn't look busy forever.
+          if (result && Date.now() - resultAt > EXIT_GRACE_MS) this.stop(ref);
+          return;
+        }
         drain(); // pick up anything written just before exit
         finished = true;
         clearInterval(timer);
+        const limit = rejectedLimit(ref.log);
         if (result) {
-          handlers.onExit({ ...result, interrupted: false, usageLimited: result.isError && LIMIT_PATTERN.test(result.resultText) });
+          const usageLimited = Boolean(limit) || LIMIT_MESSAGE.test(result.resultText.trim())
+            || (result.isError && LIMIT_PATTERN.test(result.resultText));
+          handlers.onExit({ ...result, interrupted: false, usageLimited, limitResetsAt: limit?.resetsAt ?? null });
         } else {
           const errText = existsSync(ref.errLog) ? readFileSync(ref.errLog, 'utf8').trim() : '';
           handlers.onExit({
@@ -250,7 +281,8 @@ export class CliRunner implements AgentRunner {
             contextWindow: null,
             resultText: errText || 'The agent process exited without reporting a result.',
             isError: true,
-            usageLimited: LIMIT_PATTERN.test(errText),
+            usageLimited: Boolean(limit) || LIMIT_PATTERN.test(errText),
+            limitResetsAt: limit?.resetsAt ?? null,
             interrupted: true,
           });
         }
