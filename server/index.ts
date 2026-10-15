@@ -8,6 +8,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { PORT } from './config.ts';
 import { db, getMaxConcurrent, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
 import { localOnly } from './guard.ts';
+import { boardVersion, startUpdate } from './selfUpdate.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
   accountsDto, addAccount, answerPermission, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
@@ -125,6 +126,9 @@ app.post('/api/permissions/:id', async (c) => {
 });
 
 const status = () => ({ running: runningCount(), maxConcurrent: getMaxConcurrent() });
+app.get('/api/board-version', async (c) => c.json(await boardVersion()));
+app.post('/api/board-update', async (c) => (await startUpdate(), c.json({ ok: true })));
+
 app.get('/api/status', (c) => c.json(status()));
 app.patch('/api/settings', async (c) => {
   const { maxConcurrent } = await c.req.json();

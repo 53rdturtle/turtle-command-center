@@ -103,7 +103,21 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
   return data as T;
 }
 
+export type BoardVersion = { startedAt: number; current: string | null } & (
+  | { canUpdate: false }
+  | {
+      canUpdate: true;
+      /** Commits in the main checkout that this board doesn't run yet. */
+      behind: number;
+      updating: boolean;
+      merges: { merging: number; queued: number };
+      lastError: string | null;
+    }
+);
+
 export const api = {
+  boardVersion: () => call<BoardVersion>('GET', '/api/board-version'),
+  updateBoard: () => call('POST', '/api/board-update'),
   projects: () => call<Project[]>('GET', '/api/projects'),
   pickFolder: () => call<{ path: string | null }>('POST', '/api/pick-folder').then((r) => r.path),
   addProject: (p: { name: string; path: string; defaultModel: string; permissionMode: string }) =>

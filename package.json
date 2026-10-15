@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -n server,web -c blue,magenta \"node --watch --disable-warning=ExperimentalWarning --import tsx server/index.ts\" \"vite\"",
     "build": "vite build",
-    "start": "node --disable-warning=ExperimentalWarning --import tsx server/index.ts",
+    "start": "node scripts/serve.mjs",
     "stable": "node scripts/stable.mjs",
     "typecheck": "tsc --noEmit"
   },

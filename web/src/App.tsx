@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type Project, type Task } from './api.ts';
+import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type BoardVersion, type Project, type Task } from './api.ts';
 import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
@@ -53,6 +53,7 @@ export function App() {
         {project && <button className="ghost" onClick={() => setShowSettings((s) => !s)}>Settings</button>}
         <button className="ghost" onClick={() => setShowAccounts((s) => !s)}>Accounts</button>
         <span className="spacer" />
+        <BoardUpdate />
         <AgentSlots />
         <NotifyToggle />
       </header>
@@ -376,6 +377,67 @@ function Accounts() {
       </p>
       {error && <p className="error">{error}</p>}
     </section>
+  );
+}
+
+/** Shows when tasks merged into the main checkout are newer than this board; one click updates and reloads it. */
+function BoardUpdate() {
+  const [version, setVersion] = useState<BoardVersion | null>(null);
+  const [phase, setPhase] = useState<'idle' | 'updating' | 'failed'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const before = useRef<BoardVersion | null>(null);
+
+  useEffect(() => {
+    const load = () => api.boardVersion().then(setVersion).catch(() => {});
+    load();
+    const timer = setInterval(load, 60_000);
+    addEventListener('focus', load);
+    return () => (clearInterval(timer), removeEventListener('focus', load));
+  }, []);
+
+  // While updating, wait for the restarted server: reload on a new version, report a rollback otherwise.
+  useEffect(() => {
+    if (phase !== 'updating') return;
+    const timer = setInterval(async () => {
+      const next = await api.boardVersion().catch(() => null);
+      if (!next || !before.current || next.startedAt === before.current.startedAt) {
+        if (next) setVersion(next); // still waiting for a merge to finish
+        return;
+      }
+      if (next.current !== before.current.current) location.reload();
+      else {
+        setVersion(next);
+        setError(next.canUpdate ? next.lastError : null);
+        setPhase('failed');
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [phase]);
+
+  if (!version?.canUpdate || (version.behind === 0 && phase === 'idle')) return null;
+  const busyMerges = version.merges.merging + version.merges.queued;
+  const update = () => {
+    before.current = version;
+    setError(null);
+    setPhase('updating');
+    api.updateBoard().catch((e) => (setError((e as Error).message), setPhase('failed')));
+  };
+
+  const mergeWarning = busyMerges > 0
+    ? `${busyMerges} merge${busyMerges === 1 ? ' is' : 's are'} in progress or queued. The update waits for the current one to finish; queued ones continue after the restart.`
+    : '';
+  return (
+    <span className="board-update">
+      {phase === 'updating' ? (
+        <span className="slots">{version.merges.merging > 0 ? 'Waiting for the merge to finish…' : 'Updating the board…'}</span>
+      ) : (
+        <button className="ghost" onClick={update} title={mergeWarning || `Update to the latest ${version.behind} commit(s) and reload`}>
+          {busyMerges > 0 && '⚠ '}Update board ({version.behind} new)
+        </button>
+      )}
+      {phase !== 'updating' && busyMerges > 0 && <span className="warn-text">merging</span>}
+      {phase === 'failed' && <span className="error" title={error ?? ''}>Update failed; still on {version.current}.</span>}
+    </span>
   );
 }
 

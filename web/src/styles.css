@@ -305,3 +305,6 @@ button.chip-button:hover { color: var(--text); }
 .dl.del { background: var(--danger-soft); color: var(--text); }
 .dl.hunk { color: var(--info); background: var(--info-soft); }
 .dl.note { color: var(--muted); }
+
+.board-update { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.board-update .warn-text { color: var(--warn); font-size: 12px; }

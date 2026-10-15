@@ -470,6 +470,14 @@ const MAX_MERGE_ATTEMPTS = 2;
 
 /** Projects with a merge in progress. */
 const merging = new Set<number>();
+/** Set while the board waits to restart for an update: queued merges wait for the new version. */
+let mergesPaused = false;
+
+/** Stops starting merges and resolves once none is in progress. */
+export async function pauseMerges() {
+  mergesPaused = true;
+  while (merging.size) await new Promise((r) => setTimeout(r, 250));
+}
 
 /** Puts the task in its project's merge queue. */
 export function merge(taskId: number) {
@@ -515,10 +523,10 @@ const nextInMergeQueue = (projectId: number) =>
 
 /** Merges the project's queued tasks in order, one at a time. */
 async function pumpMerges(projectId: number) {
-  if (merging.has(projectId)) return;
+  if (mergesPaused || merging.has(projectId)) return;
   merging.add(projectId);
   try {
-    for (let task = nextInMergeQueue(projectId); task; task = nextInMergeQueue(projectId)) {
+    for (let task = nextInMergeQueue(projectId); task && !mergesPaused; task = nextInMergeQueue(projectId)) {
       updateTask(task.id, { merge_state: 'merging' });
       try {
         await attemptMerge(task.id);
