@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
+import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -72,6 +72,11 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
   const diff = useDiff(task, hasWorktree && (showChanges || !['running', 'queued'].includes(task.status)));
   const merge = () => run(() => api.merge(task.id));
   const target = targetBranch ?? 'your branch';
+  // Checkpoint options tagged with a board action run the matching card button; null hides an option that can't run now.
+  const boardAction = (action: NonNullable<Option['action']>) =>
+    action === 'merge' ? (canMerge ? merge : null)
+    : action === 'done' ? (task.status !== 'done' ? () => run(() => api.done(task.id)) : null)
+    : () => setConfirmDiscard(true);
 
   const resumeCmd = task.sessionId && task.worktree ? `cd "${task.worktree}" && claude --resume ${task.sessionId}` : null;
   const copyResume = async () => {
@@ -138,7 +143,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
           </p>
         )}
         {task.permissions.map((p) => <PermissionRequest key={p.id} p={p} />)}
-        <Body task={task} children={children} />
+        <Body task={task} children={children} boardAction={boardAction} />
       </div>
 
       {tried && (
@@ -247,7 +252,9 @@ function ContextChip({ task }: { task: Task }) {
   );
 }
 
-function Body({ task, children }: { task: Task; children: Task[] }) {
+type BoardActionFn = (action: NonNullable<Option['action']>) => (() => unknown) | null;
+
+function Body({ task, children, boardAction }: { task: Task; children: Task[]; boardAction: BoardActionFn }) {
   switch (task.status) {
     case 'running':
       return <p className="activity">{task.lastActivity ?? 'Starting session…'}</p>;
@@ -262,7 +269,7 @@ function Body({ task, children }: { task: Task; children: Task[] }) {
     case 'failed':
       return <pre className="error-box">{task.error}</pre>;
     case 'needs_input':
-      return task.checkpoint ? <QuickReply task={task} /> : null;
+      return task.checkpoint ? <QuickReply task={task} boardAction={boardAction} /> : null;
     case 'split_proposed':
       return task.split ? <SplitReview task={task} /> : null;
     case 'split':
@@ -304,17 +311,20 @@ function Summary({ checkpoint }: { checkpoint: Checkpoint }) {
   );
 }
 
-function QuickReply({ task }: { task: Task }) {
+function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActionFn }) {
   const cp = task.checkpoint!;
   const { busy, error, run } = useAction();
+  const options = cp.options
+    .map((o) => ({ ...o, onClick: o.action ? boardAction(o.action) : () => run(() => api.reply(task.id, o.label)) }))
+    .filter((o) => o.onClick);
   return (
     <div>
       {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
       <Summary checkpoint={cp} />
-      {cp.options.length > 0 && (
+      {options.length > 0 && (
         <div className="options">
-          {cp.options.map((o, i) => (
-            <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={() => run(() => api.reply(task.id, o.label))}>
+          {options.map((o, i) => (
+            <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={o.onClick!}>
               <span>{o.label}</span>
               {o.detail && <small>{o.detail}</small>}
             </button>

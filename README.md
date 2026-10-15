@@ -3,7 +3,7 @@
 One page per project for supervising several Claude Code agents at once.
 
 - **Create a task**: it gets its own git worktree + branch and a Claude Code session that starts investigating immediately.
-- **Quick replies**: each agent turn ends with a summary + one-click options (or type your own reply).
+- **Quick replies**: each agent turn ends with a summary + one-click options (or type your own reply). When an agent suggests merging, marking done or discarding, that option runs the board action directly.
 - **Split**: when a task is too big, the agent proposes subtasks; edit them, approve, and they run in parallel.
 - **Permissions** show up as cards (Allow / Always allow / Deny).
 

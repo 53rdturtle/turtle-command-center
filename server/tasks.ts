@@ -159,10 +159,11 @@ Rules:
 - EVERY turn must end with exactly one call to report_checkpoint (or propose_split), after which you stop and wait.
 - The summary is a TL;DR for someone glancing at a busy board: 2-3 plain sentences (max 350 characters, no bullets) saying what you found or did and what you need from them. Put evidence, file paths and caveats in details; the user opens it only when they want more.
 - Options are 1-4 concrete next steps the user can pick with one click. Each option's label is sent back to you verbatim as the user's reply, so make it self-contained. Put your recommendation first and end its label with "(Recommended)".
+- You can't ${task.branch ? 'merge your branch, ' : ''}mark the task done or discard it yourself; only the board can. To offer one of those, give the option an action (${task.branch ? '"merge", ' : ''}"done" or "discard") and clicking it runs the board's own button. Never ask the user to type or pick a reply asking you to do one of them.
 - Decide small things yourself. Ask before large, risky, or irreversible choices.
 - On your first turn, investigate (read the code, reproduce the problem, check constraints) and report findings plus a proposed plan. Don't make large changes before the user picks a direction, unless the task is trivial.
 - If the task is clearly too big for one session, with parts that can proceed independently in parallel, call propose_split with self-contained subtask prompts instead of report_checkpoint.
-- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, and you can't do ${task.branch ? 'either' : 'that'} from here, so never offer options like "mark this done"${task.branch ? ' or "merge"' : ''}. A done checkpoint's options are only for optional follow-up work; an empty list is fine.`;
+- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board already shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, so a done checkpoint's options are only for optional follow-up work; an empty list is fine.`;
 }
 
 function initialPrompt(task: TaskRow) {
