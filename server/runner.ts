@@ -2,6 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { CLAUDE_BIN, DATA_DIR } from './config.ts';
+import { IMAGES_DIR } from './images.ts';
 
 export interface RunRequest {
   taskId: number;
@@ -111,6 +112,7 @@ export class CliRunner implements AgentRunner {
   start(req: RunRequest): RunRef {
     const dir = join(DATA_DIR, 'runs');
     mkdirSync(dir, { recursive: true });
+    mkdirSync(IMAGES_DIR, { recursive: true });
     const base = join(dir, `task-${req.taskId}-${Date.now()}`);
     const files = { prompt: `${base}.prompt.txt`, mcp: `${base}.mcp.json`, log: `${base}.jsonl`, errLog: `${base}.err.log` };
 
@@ -136,6 +138,7 @@ export class CliRunner implements AgentRunner {
       '--mcp-config', files.mcp,
       '--permission-prompt-tool', 'mcp__tcc__permission_prompt',
       '--allowedTools', 'mcp__tcc__report_checkpoint,mcp__tcc__propose_split',
+      '--add-dir', IMAGES_DIR, // pasted screenshots, so Read can open them without asking
       '--append-system-prompt', req.systemPrompt,
       ...(req.resume ? ['--resume', req.sessionId] : ['--session-id', req.sessionId]),
     ];
