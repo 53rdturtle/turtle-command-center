@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { LIMIT_RETRY_MS } from './config.ts';
 import {
   addEvent, db, DB_PATH, getAccount, getMaxConcurrent, getPermission, getProject, getTask, lastEvent, listAccounts,
-  pendingPermissions, saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
+  listEvents, pendingPermissions, saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
   type AccountRow, type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
@@ -475,7 +475,7 @@ async function attemptMerge(taskId: number): Promise<MergeOutcome> {
   const task = getTask(taskId)!;
   if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
   const project = getProject(task.project_id)!;
-  const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, `Merge task #${taskId}: ${task.title}`);
+  const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, mergeMessage(task));
   if (result.ok) {
     updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null });
     addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
@@ -543,6 +543,47 @@ export async function diff(taskId: number) {
   if (!task) throw new Error('Task not found');
   if (!task.branch || !task.worktree) throw new Error('This task has no worktree to diff');
   return taskDiff(getProject(task.project_id)!.path, task.worktree);
+}
+
+const RESOLVE_PROMPT = /^The user clicked Merge, but your branch conflicts with /;
+// Prompts and notes the board writes into the timeline itself, as opposed to the user's replies.
+const BOARD_EVENTS = [
+  /^You were interrupted by a usage limit\./, /^Your previous run ended unexpectedly\./,
+  /^Merged `/, /^Approved split into \d+ subtasks\.$/, /^Opened the session in a terminal\.$/,
+  /hit its usage limit; continuing on /, /^Merging into `.*` conflicts in /, RESOLVE_PROMPT,
+];
+const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max).trimEnd()}…` : s);
+
+/**
+ * The task's request, outcome and the user's replies go into the merge commit, so git history
+ * keeps the "why" and an agent can answer questions about past work from `git log` alone.
+ */
+function mergeMessage(task: TaskRow) {
+  const parts = [`Merge task #${task.id}: ${task.title}`];
+  if (task.description.trim()) parts.push(`Request:\n${clip(task.description.trim(), 2000)}`);
+  const events = listEvents(task.id);
+  const first = events.find((e) => e.kind === 'user')?.text.trim();
+  const replies: string[] = [];
+  let outcome: string | null = null;
+  let resolving = false; // checkpoints from conflict-resolution runs aren't the task's outcome
+  for (const e of events.slice(events.findIndex((e) => e.kind === 'user') + 1)) {
+    const text = e.text.trim();
+    if (e.kind === 'checkpoint' && !resolving) outcome = text;
+    if (e.kind !== 'user') continue;
+    if (RESOLVE_PROMPT.test(text)) resolving = true;
+    // A run that hit a usage limit before starting re-sends the initial prompt, so skip repeats of it.
+    else if (text && text !== first && !BOARD_EVENTS.some((re) => re.test(text))) {
+      replies.push(text);
+      resolving = false;
+    }
+  }
+  if (replies.length) parts.push(`My replies:\n${replies.map((r) => `- ${clip(r, 500).replace(/\s*\n+\s*/g, ' ')}`).join('\n')}`);
+  if (!outcome && task.checkpoint) {
+    const cp = JSON.parse(task.checkpoint) as Checkpoint;
+    outcome = cp.details ? `${cp.summary}\n\n${cp.details}` : cp.summary;
+  }
+  if (outcome) parts.push(`Outcome:\n${clip(outcome, 4000)}`);
+  return parts.join('\n\n');
 }
 
 export async function discard(taskId: number) {
