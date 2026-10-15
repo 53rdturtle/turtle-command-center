@@ -1,4 +1,4 @@
-import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Component, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import { api, onStream, type Checkpoint, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
 
@@ -197,7 +197,23 @@ function QuickReply({ task }: { task: Task }) {
   );
 }
 
-function ReplyBox({ taskId, placeholder = 'Reply in your own words…  (Ctrl+Enter to send)' }: { taskId: number; placeholder?: string }) {
+// Shared textarea key handling: Enter submits, Ctrl/Shift+Enter inserts a newline.
+// Enter during IME composition (e.g. picking a Chinese candidate) is left alone.
+export function enterToSubmit(submit: () => void) {
+  return (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.altKey) return;
+    if (e.shiftKey) return; // browser inserts the newline itself
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl+Enter doesn't insert anything natively; execCommand keeps undo history and fires onChange.
+      document.execCommand('insertText', false, '\n');
+      return;
+    }
+    submit();
+  };
+}
+
+function ReplyBox({ taskId, placeholder = 'Reply in your own words…  (Enter to send, Ctrl+Enter for new line)' }: { taskId: number; placeholder?: string }) {
   const [text, setText] = useState('');
   const { busy, error, run } = useAction();
   const send = () => text.trim() && run(async () => {
@@ -211,9 +227,7 @@ function ReplyBox({ taskId, placeholder = 'Reply in your own words…  (Ctrl+Ent
         value={text}
         placeholder={placeholder}
         onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send();
-        }}
+        onKeyDown={enterToSubmit(send)}
       />
       <button disabled={busy || !text.trim()} onClick={send}>Send</button>
       {error && <p className="error">{error}</p>}
