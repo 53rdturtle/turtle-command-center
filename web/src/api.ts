@@ -37,6 +37,10 @@ export interface Task {
   mergeFailure: MergeFailure | null;
   retryAt: number | null;
   costUsd: number;
+  /** Tokens in the session's context as of its latest model call. */
+  contextTokens: number | null;
+  /** The model's context window; known once a run has finished. */
+  contextWindow: number | null;
   lastActivity: string | null;
   permissions: Permission[];
   createdAt: number;
@@ -118,6 +122,8 @@ export const api = {
   cancelMerge: (id: number) => call('POST', `/api/tasks/${id}/merge/cancel`),
   dismissMergeFailure: (id: number) => call('POST', `/api/tasks/${id}/merge/dismiss`),
   permission: (id: string, decision: 'allow' | 'always' | 'deny') => call('POST', `/api/permissions/${id}`, { decision }),
+  setMaxConcurrent: (maxConcurrent: number) =>
+    call<{ running: number; maxConcurrent: number }>('PATCH', '/api/settings', { maxConcurrent }),
 };
 
 // ---------- live stream ----------

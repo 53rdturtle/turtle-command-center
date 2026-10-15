@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DATA_DIR } from './config.ts';
+import { DATA_DIR, DEFAULT_MAX_CONCURRENT } from './config.ts';
 
 mkdirSync(DATA_DIR, { recursive: true });
 export const DB_PATH = join(DATA_DIR, 'tcc.db');
@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS permissions (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pending_permissions ON permissions(task_id, status);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS accounts (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -86,6 +90,8 @@ for (const [name, type] of [
   ['account_id', 'INTEGER'], // account of the current (or last) run
   ['merge_queued_at', 'INTEGER'], // when Merge was clicked; the merge queue goes in this order
   ['merge_failure', 'TEXT'], // why the last merge didn't land (JSON MergeFailure), until dismissed or retried
+  ['context_tokens', 'INTEGER'], // tokens in the session's context as of its latest model call
+  ['context_window', 'INTEGER'], // the model's context window size, reported when a run ends
 ] as const) {
   if (!taskColumns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
 }
@@ -119,6 +125,7 @@ export interface TaskRow {
   rev: number; run_ref: string | null; run_offset: number; run_prompt: string | null;
   merge_state: MergeState | null; merge_attempts: number; account_id: number | null;
   merge_queued_at: number | null; merge_failure: string | null;
+  context_tokens: number | null; context_window: number | null;
 }
 export type MergeState = 'queued' | 'merging' | 'resolving';
 export interface MergeFailure { target: string; conflicts: string[]; message: string }
@@ -174,3 +181,11 @@ export const pendingPermissions = (taskId: number) =>
     .all(taskId) as unknown as PermissionRow[];
 export const getPermission = (id: string) =>
   db.prepare('SELECT * FROM permissions WHERE id = ?').get(id) as PermissionRow | undefined;
+
+export function getMaxConcurrent() {
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'max_concurrent'`).get() as { value: string } | undefined;
+  return row ? Number(row.value) : DEFAULT_MAX_CONCURRENT;
+}
+export const saveMaxConcurrent = (n: number) =>
+  db.prepare(`INSERT INTO settings (key, value) VALUES ('max_concurrent', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+    .run(String(n));
