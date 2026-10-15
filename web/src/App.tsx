@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type Project, type Task } from './api.ts';
+import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type Project, type UsageWindow, type Task } from './api.ts';
 import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
@@ -53,6 +53,7 @@ export function App() {
         {project && <button className="ghost" onClick={() => setShowSettings((s) => !s)}>Settings</button>}
         <button className="ghost" onClick={() => setShowAccounts((s) => !s)}>Accounts</button>
         <span className="spacer" />
+        <UsagePill />
         <AgentSlots />
         <NotifyToggle />
       </header>
@@ -341,8 +342,10 @@ function Accounts() {
               <strong>{a.name}</strong>
               <span className="muted">
                 {a.usesToken ? 'token' : 'claude CLI login'}
+                {a.active && accounts.length > 1 && <> · in use</>}
                 {a.running > 0 && <> · {a.running} running</>}
               </span>
+              <Usage usage={a.usage} />
               {a.limitedUntil && (
                 <>
                   <span className="pill pill-limited">Limited until {clock(a.limitedUntil)}</span>
@@ -369,6 +372,59 @@ function Accounts() {
       </p>
       {error && <p className="error">{error}</p>}
     </section>
+  );
+}
+
+const percent = (w: UsageWindow) => `${Math.round(w.utilization * 100)}%`;
+const ago = (ms: number) => {
+  const min = Math.round((Date.now() - ms) / 60_000);
+  return min < 1 ? 'just now' : min < 60 ? `${min}m ago` : `${Math.round(min / 60)}h ago`;
+};
+const resetLabel = (w: UsageWindow) => {
+  if (!w.resetsAt) return 'reset since last report';
+  const sameDay = new Date(w.resetsAt).toDateString() === new Date().toDateString();
+  return `resets ${sameDay ? clock(w.resetsAt) : new Date(w.resetsAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`;
+};
+
+function UsageBar({ label, window: w }: { label: string; window: UsageWindow }) {
+  const level = w.utilization >= 0.9 ? 'high' : w.utilization >= 0.7 ? 'mid' : 'low';
+  return (
+    <span className="usage" title={`${label} window: ${percent(w)} used, ${resetLabel(w)}`}>
+      <span className="usage-label">{label}</span>
+      <span className="usage-bar"><span className={`usage-fill usage-${level}`} style={{ width: percent(w) }} /></span>
+      <span className="usage-pct">{percent(w)}</span>
+    </span>
+  );
+}
+
+/** Usage is only reported while an agent runs on the account, so it can be stale when idle. */
+function Usage({ usage }: { usage: AccountUsage | null }) {
+  if (!usage) return <span className="muted">usage shows after its first run</span>;
+  return (
+    <span className="usage-group">
+      {usage.fiveHour && <UsageBar label="5h" window={usage.fiveHour} />}
+      {usage.sevenDay && <UsageBar label="7d" window={usage.sevenDay} />}
+      <span className="muted usage-age">as of {ago(usage.reportedAt)}</span>
+    </span>
+  );
+}
+
+/** The account new runs start on, and how much of its usage is left. */
+function UsagePill() {
+  const [usage, setUsage] = useState<(AccountUsage & { account: string }) | null>(null);
+  useEffect(() => onStream((m) => m.type === 'status' && setUsage(m.usage ?? null)), []);
+  if (!usage?.fiveHour && !usage?.sevenDay) return null;
+  const title = [
+    usage.account,
+    usage.fiveHour && `5-hour: ${percent(usage.fiveHour)} used, ${resetLabel(usage.fiveHour)}`,
+    usage.sevenDay && `7-day: ${percent(usage.sevenDay)} used, ${resetLabel(usage.sevenDay)}`,
+    `as of ${ago(usage.reportedAt)}`,
+  ].filter(Boolean).join('\n');
+  return (
+    <span className="slots" title={title}>
+      {usage.fiveHour && <UsageBar label="5h" window={usage.fiveHour} />}
+      {usage.sevenDay && <UsageBar label="7d" window={usage.sevenDay} />}
+    </span>
   );
 }
 

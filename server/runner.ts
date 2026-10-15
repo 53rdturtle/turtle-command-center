@@ -27,7 +27,13 @@ export interface RunRef {
 export type AgentEvent =
   | { kind: 'session'; sessionId: string }
   | { kind: 'assistant'; text: string }
-  | { kind: 'tool'; text: string };
+  | { kind: 'tool'; text: string }
+  | { kind: 'usage'; usage: AccountUsage };
+
+/** A subscription usage window: fraction used (0-1) and when it resets (ms). */
+export interface UsageWindow { utilization: number; resetsAt: number }
+/** Subscription usage the CLI reports alongside each API call. */
+export interface AccountUsage { fiveHour?: UsageWindow; sevenDay?: UsageWindow }
 
 export interface RunResult {
   costUsd: number;
@@ -64,6 +70,18 @@ function describeTool(name: string, input: Record<string, unknown>): string {
   const pick = input.command ?? input.file_path ?? input.pattern ?? input.url ?? input.query ?? input.description;
   const detail = typeof pick === 'string' ? pick : '';
   return detail ? `${name}: ${detail.length > 200 ? detail.slice(0, 200) + '…' : detail}` : name;
+}
+
+const usageWindow = (w: any): UsageWindow | undefined =>
+  typeof w?.utilization === 'number' && typeof w?.resetsAt === 'number'
+    ? { utilization: w.utilization, resetsAt: w.resetsAt * 1000 }
+    : undefined;
+
+/** Reads a `rate_limit_event` line. Older CLIs report only the window that's closest to its limit. */
+function parseUsage(info: any): AccountUsage | undefined {
+  const windows = info?.unifiedWindows ?? (info?.rateLimitType ? { [info.rateLimitType]: info } : {});
+  const usage = { fiveHour: usageWindow(windows.five_hour), sevenDay: usageWindow(windows.seven_day) };
+  return usage.fiveHour || usage.sevenDay ? usage : undefined;
 }
 
 function isAlive(pid: number) {
@@ -173,6 +191,9 @@ export class CliRunner implements AgentRunner {
         }
         if (msg?.type === 'system' && msg.subtype === 'init' && msg.session_id) {
           handlers.onEvent({ kind: 'session', sessionId: msg.session_id });
+        } else if (msg?.type === 'rate_limit_event') {
+          const usage = parseUsage(msg.rate_limit_info);
+          if (usage) handlers.onEvent({ kind: 'usage', usage });
         } else if (msg?.type === 'assistant') {
           for (const block of msg.message?.content ?? []) {
             if (block.type === 'text' && block.text?.trim()) handlers.onEvent({ kind: 'assistant', text: block.text });

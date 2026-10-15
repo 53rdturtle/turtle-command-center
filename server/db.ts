@@ -89,6 +89,14 @@ for (const [name, type] of [
 }
 db.exec('CREATE INDEX IF NOT EXISTS tasks_by_rev ON tasks(rev)');
 
+const accountColumns = new Set((db.prepare('PRAGMA table_info(accounts)').all() as { name: string }[]).map((c) => c.name));
+for (const [name, type] of [
+  ['usage', 'TEXT'], // last subscription usage the CLI reported (JSON AccountUsage)
+  ['usage_at', 'INTEGER'], // when it was reported
+] as const) {
+  if (!accountColumns.has(name)) db.exec(`ALTER TABLE accounts ADD COLUMN ${name} ${type}`);
+}
+
 export type TaskStatus =
   | 'queued' | 'running' | 'needs_input' | 'split_proposed' | 'split'
   | 'limited' | 'failed' | 'done' | 'discarded';
@@ -117,7 +125,10 @@ export interface TaskRow {
   rev: number; run_ref: string | null; run_offset: number; run_prompt: string | null;
   merge_state: 'resolving' | null; merge_attempts: number; account_id: number | null;
 }
-export interface AccountRow { id: number; name: string; token: string | null; limited_until: number | null; created_at: number }
+export interface AccountRow {
+  id: number; name: string; token: string | null; limited_until: number | null; created_at: number;
+  usage: string | null; usage_at: number | null;
+}
 export interface EventRow { id: number; task_id: number; ts: number; kind: string; text: string }
 export interface PermissionRow {
   id: string; task_id: number; tool_name: string; input: string;

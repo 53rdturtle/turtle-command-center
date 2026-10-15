@@ -50,12 +50,20 @@ export interface Project {
   currentBranch: string | null;
 }
 
+/** Fraction used (0-1); resetsAt is null once the window has reset since it was reported. */
+export interface UsageWindow { utilization: number; resetsAt: number | null }
+export interface AccountUsage { fiveHour: UsageWindow | null; sevenDay: UsageWindow | null; reportedAt: number }
+
 export interface Account {
   id: number;
   name: string;
   /** False for the account the `claude` CLI is logged in to. */
   usesToken: boolean;
+  /** The account new runs start on. */
+  active: boolean;
   limitedUntil: number | null;
+  /** Last usage the CLI reported during a run on this account; null until one has run. */
+  usage: AccountUsage | null;
   running: number;
 }
 
@@ -123,7 +131,7 @@ export const api = {
 export type StreamMessage =
   | { type: 'task'; task: Task }
   | { type: 'event'; event: TaskEvent }
-  | { type: 'status'; running: number; maxConcurrent: number };
+  | { type: 'status'; running: number; maxConcurrent: number; usage: (AccountUsage & { account: string }) | null };
 
 type Handler = (m: StreamMessage) => void;
 const handlers = new Set<Handler>();
