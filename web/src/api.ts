@@ -30,6 +30,8 @@ export interface Task {
   retryAt: number | null;
   costUsd: number;
   lastActivity: string | null;
+  /** Counts over all subtasks, including discarded ones (which the board doesn't list). */
+  subtasks: { total: number; done: number; discarded: number } | null;
   permissions: Permission[];
   createdAt: number;
   updatedAt: number;
