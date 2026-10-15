@@ -15,7 +15,20 @@ npm run build   # build the UI once
 npm start       # http://localhost:7777
 ```
 
-For UI development: `npm run dev` and open http://localhost:5173.
+### Developing the board with itself
+
+Run the board you use from a **stable copy**, not from this checkout: merging a task into this checkout changes
+the server's files, and a `--watch` server would restart in the middle of the merge.
+
+```sh
+npm run stable   # creates/updates ../TurtleCommandCenter-stable at this checkout's HEAD and builds it
+cd ../TurtleCommandCenter-stable && npm start   # http://localhost:7777, your real data in ~/.turtle-cc
+```
+
+Rerun `npm run stable` and restart that server whenever you want to pick up merged changes.
+
+For UI development, `npm run dev` here and open http://localhost:5173. Dev mode uses its own API port (7778) and data
+(`~/.turtle-cc-dev`), so it never shares a database with the stable board.
 
 Requires the `claude` CLI, logged in (`claude login`). Sessions run on your Claude subscription;
 `ANTHROPIC_API_KEY` is stripped from the agent environment so it is never billed to an API key by accident.

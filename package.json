@@ -7,6 +7,7 @@
     "dev": "concurrently -n server,web -c blue,magenta \"node --watch --disable-warning=ExperimentalWarning --import tsx server/index.ts\" \"vite\"",
     "build": "vite build",
     "start": "node --disable-warning=ExperimentalWarning --import tsx server/index.ts",
+    "stable": "node scripts/stable.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
