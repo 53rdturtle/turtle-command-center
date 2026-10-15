@@ -103,12 +103,10 @@ function Board({ project }: { project: Project }) {
   const attention = all.filter(needsAttention).sort(byUpdate);
   const working = all.filter((t) => !needsAttention(t) && ['running', 'queued', 'limited'].includes(t.status)).sort(byUpdate);
   const parked = all.filter((t) => !needsAttention(t) && t.status === 'split');
-  // Tasks the agent reported done (still reviewable/mergeable) sort above ones you've already closed out.
-  const finished = all.filter(agentDone);
-  const done = [...finished, ...all.filter((t) => t.status === 'done')].sort((a, b) =>
-    Number(agentDone(b)) - Number(agentDone(a)) || b.updatedAt - a.updatedAt);
+  const review = all.filter(agentDone).sort(byUpdate);
+  const done = all.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt);
 
-  useAttentionSignals(attention, finished);
+  useAttentionSignals(attention, review);
 
   const card = (t: Task) => (
     <CardErrorBoundary key={t.id} taskId={t.id}>
@@ -125,13 +123,13 @@ function Board({ project }: { project: Project }) {
     <main className="board">
       <NewTask project={project} />
       <Section title="Needs you" count={attention.length} empty="Nothing waiting on you. 🎉">{attention.map(card)}</Section>
+      {review.length > 0 && <Section title="Ready for review" count={review.length}>{review.map(card)}</Section>}
       <Section title="Working" count={working.length} empty="No agents running.">{working.map(card)}</Section>
       {parked.length > 0 && <Section title="Split into subtasks" count={parked.length}>{parked.map(card)}</Section>}
       {done.length > 0 && (
         <section className="section">
           <button className="section-toggle" onClick={toggleDone}>
             {showDone ? '▾' : '▸'} Done <span className="count">{done.length}</span>
-            {finished.length > 0 && <span className="count ready">{finished.length} to review</span>}
           </button>
           {showDone && <div className="cards">{done.map(card)}</div>}
         </section>
