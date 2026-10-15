@@ -25,7 +25,7 @@ Requires the `claude` CLI, logged in (`claude login`). Sessions run on your Clau
 | Variable | Default | |
 |---|---|---|
 | `TCC_PORT` | `7777` | |
-| `TCC_MAX_CONCURRENT` | `2` | Agents running at once across all projects; extra tasks queue |
+| `TCC_MAX_CONCURRENT` | `5` | Agents running at once across all projects; extra tasks queue |
 | `TCC_DATA_DIR` | `~/.turtle-cc` | SQLite DB + task worktrees |
 | `TCC_CLAUDE_BIN` | `claude` | |
 

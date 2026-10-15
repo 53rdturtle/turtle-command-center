@@ -296,7 +296,7 @@ function AgentSlots() {
   const [status, setStatus] = useState<{ running: number; maxConcurrent: number } | null>(null);
   useEffect(() => onStream((m) => m.type === 'status' && setStatus({ running: m.running, maxConcurrent: m.maxConcurrent })), []);
   if (!status) return null;
-  return <span className="slots" title="Agents running across all projects">{status.running}/{status.maxConcurrent} agents</span>;
+  return <span className="slots" title="Agents running across all projects. Change the max with the TCC_MAX_CONCURRENT env var (restart the server).">{status.running}/{status.maxConcurrent} agents</span>;
 }
 
 function NotifyToggle() {
