@@ -39,7 +39,12 @@ export interface Project {
   defaultModel: string;
   permissionMode: string;
   alwaysAllow: string[];
+  currentBranch: string | null;
 }
+
+export type MergeResult =
+  | { ok: true; target: string }
+  | { ok: false; target: string; conflicts: string[]; message: string };
 
 export interface TaskEvent { id: number; task_id: number; ts: number; kind: string; text: string }
 
@@ -69,6 +74,7 @@ export const api = {
   retry: (id: number) => call('POST', `/api/tasks/${id}/retry`),
   done: (id: number) => call('POST', `/api/tasks/${id}/done`),
   discard: (id: number) => call('POST', `/api/tasks/${id}/discard`),
+  merge: (id: number) => call<MergeResult>('POST', `/api/tasks/${id}/merge`),
   permission: (id: string, decision: 'allow' | 'always' | 'deny') => call('POST', `/api/permissions/${id}`, { decision }),
 };
 

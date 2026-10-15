@@ -36,6 +36,8 @@ Requires the `claude` CLI, logged in (`claude login`). Sessions run on your Clau
 - `server/mcp.ts` is a small MCP server at `/mcp/:taskId` that every session connects to. It provides
   `report_checkpoint`, `propose_split`, and `permission_prompt` (used via `--permission-prompt-tool`).
 - `server/tasks.ts` has the scheduler, task lifecycle, and live updates (SSE at `/api/stream`).
-- **Mark done** commits leftover changes and removes the worktree but keeps the `tcc/...` branch for you to merge.
+- **Merge into <branch>** merges the task branch (`--no-ff`) into whatever your main checkout has checked out, then removes
+  the worktree and branch. On conflicts the merge is aborted (your checkout is untouched) and you can ask the agent to resolve them.
+- **Mark done** commits leftover changes and removes the worktree but keeps the `tcc/...` branch.
   **Discard** deletes the worktree and the branch.
 - Hitting a usage limit parks the task and retries it automatically after 30 minutes.

@@ -10,22 +10,23 @@ import { db, getProjectBySlug, listEvents, listProjects, listTasks, type Project
 import { mcpHandler } from './mcp.ts';
 import {
   answerPermission, approveSplit, createTask, discard, markDone, recoverOnStartup,
-  reply, retry, runningCount, stop, subscribe, toDto,
+  merge, reply, retry, runningCount, stop, subscribe, toDto,
 } from './tasks.ts';
-import { getRemote, slugify } from './worktree.ts';
+import { currentBranch, getRemote, slugify } from './worktree.ts';
 
 const app = new Hono();
 
 app.onError((err, c) => c.json({ error: err.message }, 400));
 
-const projectDto = (p: ProjectRow) => ({
+const projectDto = async (p: ProjectRow) => ({
+  currentBranch: await currentBranch(p.path),
   slug: p.slug, name: p.name, path: p.path, remote: p.remote,
   defaultModel: p.default_model, permissionMode: p.permission_mode, alwaysAllow: JSON.parse(p.always_allow),
 });
 
 // ---------- projects ----------
 
-app.get('/api/projects', (c) => c.json(listProjects().map(projectDto)));
+app.get('/api/projects', async (c) => c.json(await Promise.all(listProjects().map(projectDto))));
 
 app.post('/api/projects', async (c) => {
   const { name, path, defaultModel, permissionMode } = await c.req.json();
@@ -37,7 +38,7 @@ app.post('/api/projects', async (c) => {
   db.prepare(`INSERT INTO projects (slug, name, path, remote, default_model, permission_mode, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(slug, name.trim(), absPath, await getRemote(absPath), defaultModel || 'sonnet', permissionMode || 'acceptEdits', Date.now());
-  return c.json(projectDto(getProjectBySlug(slug)!));
+  return c.json(await projectDto(getProjectBySlug(slug)!));
 });
 
 app.patch('/api/projects/:slug', async (c) => {
@@ -50,7 +51,7 @@ app.patch('/api/projects/:slug', async (c) => {
     body.alwaysAllow ? JSON.stringify(body.alwaysAllow) : project.always_allow,
     project.id,
   );
-  return c.json(projectDto(getProjectBySlug(project.slug)!));
+  return c.json(await projectDto(getProjectBySlug(project.slug)!));
 });
 
 // ---------- tasks ----------
@@ -90,6 +91,7 @@ app.post('/api/tasks/:id/stop', (c) => (stop(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/retry', (c) => (retry(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/done', async (c) => (await markDone(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/discard', async (c) => (await discard(taskId(c)), c.json({ ok: true })));
+app.post('/api/tasks/:id/merge', async (c) => c.json(await merge(taskId(c))));
 
 app.post('/api/permissions/:id', async (c) => {
   const { decision, message } = await c.req.json();

@@ -13,6 +13,9 @@ export function App() {
   const reloadProjects = useCallback(() => api.projects().then(setProjects), []);
   useEffect(() => {
     reloadProjects();
+    // The checked-out branch (merge target) can change outside the app.
+    addEventListener('focus', reloadProjects);
+    return () => removeEventListener('focus', reloadProjects);
   }, [reloadProjects]);
 
   const navigate = (next: string) => {
@@ -110,6 +113,7 @@ function Board({ project }: { project: Project }) {
       task={t}
       parent={t.parentId ? tasks.get(t.parentId) : undefined}
       children={all.filter((c) => c.parentId === t.id)}
+      targetBranch={project.currentBranch}
     />
   );
 

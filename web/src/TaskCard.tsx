@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
-import { api, onStream, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
+import { api, onStream, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -30,12 +30,19 @@ function useAction() {
   return { busy, error, run };
 }
 
-export function TaskCard({ task, parent, children }: { task: Task; parent?: Task; children: Task[] }) {
+export function TaskCard({ task, parent, children, targetBranch }: { task: Task; parent?: Task; children: Task[]; targetBranch: string | null }) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [mergeFailure, setMergeFailure] = useState<Extract<MergeResult, { ok: false }> | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : task.status;
+  const canMerge = Boolean(task.branch && task.worktree) && !['running', 'queued', 'done'].includes(task.status);
+  const merge = () => run(async () => {
+    setMergeFailure(null);
+    const result = await api.merge(task.id);
+    if (!result.ok) setMergeFailure(result);
+  });
 
   const resumeCmd = task.sessionId && task.worktree ? `cd "${task.worktree}" && claude --resume ${task.sessionId}` : null;
   const copyResume = async () => {
@@ -70,6 +77,7 @@ export function TaskCard({ task, parent, children }: { task: Task; parent?: Task
         <Body task={task} children={children} />
       </div>
 
+      {mergeFailure && <MergeFailure taskId={task.id} failure={mergeFailure} onDismiss={() => setMergeFailure(null)} />}
       {error && <p className="error">{error}</p>}
 
       <footer className="card-actions">
@@ -88,8 +96,13 @@ export function TaskCard({ task, parent, children }: { task: Task; parent?: Task
         {(task.status === 'failed' || task.status === 'limited') && (
           <button className="ghost" disabled={busy} onClick={() => run(() => api.retry(task.id))}>Retry now</button>
         )}
+        {canMerge && (
+          <button className={task.checkpoint?.done ? '' : 'ghost'} disabled={busy} onClick={merge} title={`Merge ${task.branch} into the branch checked out in your repo`}>
+            Merge into {targetBranch ?? 'current branch'}
+          </button>
+        )}
         {task.status !== 'done' && (
-          <button className="ghost" disabled={busy} onClick={() => run(() => api.done(task.id))}>Mark done</button>
+          <button className="ghost" disabled={busy} onClick={() => run(() => api.done(task.id))} title="Keep the branch, remove the worktree">Mark done</button>
         )}
         {confirmDiscard ? (
           <>
@@ -212,6 +225,37 @@ function SplitReview({ task }: { task: Task }) {
           Keep as one task
         </button>
       </div>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+function MergeFailure({ taskId, failure, onDismiss }: { taskId: number; failure: Extract<MergeResult, { ok: false }>; onDismiss: () => void }) {
+  const { busy, error, run } = useAction();
+  const askAgent = () => run(async () => {
+    await api.reply(taskId,
+      `Merging into \`${failure.target}\` conflicts in: ${failure.conflicts.join(', ')}. ` +
+      `Run \`git merge ${failure.target}\` in your worktree, resolve the conflicts, run any relevant checks, commit, and report back.`);
+    onDismiss();
+  });
+  return (
+    <div className="merge-failure">
+      {failure.conflicts.length > 0 ? (
+        <>
+          <p><strong>Merge conflicts with {failure.target}</strong>. The merge was aborted, so your checkout is unchanged.</p>
+          <ul>{failure.conflicts.map((f) => <li key={f}><code>{f}</code></li>)}</ul>
+          <div className="options">
+            <button className="option primary" disabled={busy} onClick={askAgent}>Ask the agent to resolve them</button>
+            <button className="option" onClick={onDismiss}>Dismiss</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p><strong>Couldn't merge into {failure.target}.</strong></p>
+          <pre>{failure.message}</pre>
+          <div className="options"><button className="option" onClick={onDismiss}>Dismiss</button></div>
+        </>
+      )}
       {error && <p className="error">{error}</p>}
     </div>
   );

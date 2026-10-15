@@ -5,7 +5,7 @@ import {
   type Checkpoint, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AgentRunner, type RunHandle } from './runner.ts';
-import { createWorktree, discardWorktree, saveAndRemoveWorktree } from './worktree.ts';
+import { createWorktree, discardWorktree, mergeTaskBranch, saveAndRemoveWorktree } from './worktree.ts';
 
 const runner: AgentRunner = new CliRunner();
 const running = new Map<number, RunHandle>();
@@ -337,6 +337,21 @@ export async function markDone(taskId: number) {
   if (task.branch && task.worktree) await saveAndRemoveWorktree(project.path, task.worktree, taskId);
   updateTask(taskId, { status: 'done', worktree: task.branch ? null : task.worktree });
   emitTask(taskId);
+}
+
+export async function merge(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
+  if (running.has(taskId)) throw new Error('Task is running; wait for its checkpoint or stop it first');
+  const project = getProject(task.project_id)!;
+  const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, `Merge task #${taskId}: ${task.title}`);
+  if (result.ok) {
+    updateTask(taskId, { status: 'done', worktree: null, branch: null });
+    emitEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
+    emitTask(taskId);
+  }
+  return result;
 }
 
 export async function discard(taskId: number) {

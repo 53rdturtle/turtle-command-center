@@ -55,6 +55,42 @@ export async function saveAndRemoveWorktree(repo: string, path: string, taskId: 
   await git(repo, 'worktree', 'remove', '--force', path);
 }
 
+export async function currentBranch(repo: string) {
+  try {
+    return await git(repo, 'rev-parse', '--abbrev-ref', 'HEAD');
+  } catch {
+    return null;
+  }
+}
+
+export type MergeResult =
+  | { ok: true; target: string }
+  | { ok: false; target: string; conflicts: string[]; message: string };
+
+/**
+ * Merges a task branch into whatever branch the main checkout is on.
+ * On conflicts the merge is aborted, leaving the user's checkout as it was.
+ */
+export async function mergeTaskBranch(repo: string, worktree: string, branch: string, taskId: number, message: string): Promise<MergeResult> {
+  if ((await git(worktree, 'status', '--porcelain')) !== '') {
+    await git(worktree, 'add', '-A');
+    await git(worktree, 'commit', '-m', `tcc: uncommitted work from task #${taskId}`);
+  }
+  const target = (await currentBranch(repo)) ?? 'HEAD';
+  try {
+    await git(repo, 'merge', '--no-ff', '-m', message, branch);
+  } catch (err: any) {
+    const conflicts = (await git(repo, 'diff', '--name-only', '--diff-filter=U').catch(() => ''))
+      .split('\n').filter(Boolean);
+    if (conflicts.length) await git(repo, 'merge', '--abort').catch(() => {});
+    const detail = String(err.stderr || err.stdout || err.message).trim();
+    return { ok: false, target, conflicts, message: detail };
+  }
+  await git(repo, 'worktree', 'remove', '--force', worktree);
+  await git(repo, 'branch', '-d', branch).catch(() => {});
+  return { ok: true, target };
+}
+
 export async function discardWorktree(repo: string, path: string, branch: string) {
   await git(repo, 'worktree', 'remove', '--force', path).catch(() => {});
   await git(repo, 'branch', '-D', branch).catch(() => {});
