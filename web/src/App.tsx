@@ -87,11 +87,15 @@ export function App() {
 
 function Board({ project }: { project: Project }) {
   const [tasks, setTasks] = useState<Map<number, Task>>(new Map());
+  const [loaded, setLoaded] = useState(false);
   const [showDone, setShowDone] = useState(() => localStorage.getItem('tcc.showDone') === '1');
   const toggleDone = () => setShowDone((s) => (localStorage.setItem('tcc.showDone', s ? '0' : '1'), !s));
 
   useEffect(() => {
-    api.tasks(project.slug).then((list) => setTasks(new Map(list.map((t) => [t.id, t]))));
+    api.tasks(project.slug).then((list) => {
+      setTasks(new Map(list.map((t) => [t.id, t])));
+      setLoaded(true);
+    });
     return onStream((m) => {
       if (m.type === 'task' && m.task.projectSlug === project.slug) {
         setTasks((prev) => {
@@ -115,7 +119,9 @@ function Board({ project }: { project: Project }) {
   const review = all.filter(agentDone).sort(byUpdate);
   const done = all.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt);
 
-  useAttentionSignals(attention, review);
+  const limited = working.filter((t) => t.status === 'limited');
+
+  useAttentionSignals(project, loaded, attention, review, limited);
 
   const card = (t: Task) => (
     <CardErrorBoundary key={t.id} taskId={t.id}>
@@ -586,32 +592,76 @@ function AgentSlots() {
   );
 }
 
+const notifySupported = typeof Notification !== 'undefined';
+const notifyWanted = () => localStorage.getItem('tcc.notify') === '1';
+
 function NotifyToggle() {
-  const [perm, setPerm] = useState(typeof Notification === 'undefined' ? 'denied' : Notification.permission);
-  if (perm !== 'default') return null;
-  return <button className="ghost" onClick={() => Notification.requestPermission().then(setPerm)}>Enable notifications</button>;
+  const [perm, setPerm] = useState(notifySupported ? Notification.permission : 'denied');
+  const [wanted, setWanted] = useState(notifyWanted);
+  if (!notifySupported) return null;
+  const on = wanted && perm === 'granted';
+  const toggle = async () => {
+    const next = !on && perm === 'default' ? await Notification.requestPermission() : perm;
+    setPerm(next);
+    const keep = !on && next === 'granted';
+    localStorage.setItem('tcc.notify', keep ? '1' : '0');
+    setWanted(keep);
+  };
+  const title = perm === 'denied' ? 'Notifications are blocked for this site. Allow them in the site settings of your browser.'
+    : on ? 'Desktop notifications on: you get one when a task needs you and this tab is in the background. Click to turn off.'
+    : 'Turn on desktop notifications for tasks that need you';
+  return (
+    <button className={`ghost bell${on ? ' on' : ''}`} onClick={toggle} disabled={perm === 'denied'} title={title} aria-pressed={on} aria-label="Desktop notifications">
+      {on ? '🔔' : '🔕'}
+    </button>
+  );
 }
 
-/** Tab-title badge for tasks that need you, plus a desktop notification when one newly needs you or an agent finishes. */
-function useAttentionSignals(attention: Task[], finished: Task[]) {
-  const seen = useRef<Set<string> | null>(null);
-  const notify = useMemo(() => [...attention, ...finished], [attention, finished]);
+/** Scroll to a card and flash it, e.g. after clicking its notification. */
+function revealCard(id: number) {
+  const el = document.getElementById(`task-${id}`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+}
+
+function notifyBody(t: Task) {
+  if (t.permissions.length) return `Wants to use ${t.permissions[0].toolName}`;
+  if (t.status === 'split_proposed') return 'Proposes splitting into subtasks';
+  if (t.status === 'failed') return t.error ? `Failed: ${t.error}` : 'Failed';
+  if (t.status === 'limited') return 'Hit a usage limit; will retry when it resets';
+  if (t.mergeFailure) return 'Merge needs your help';
+  return t.checkpoint?.summary ?? 'Needs your input';
+}
+
+/**
+ * Tab-title badge for tasks that need you, plus a desktop notification when one newly needs you,
+ * an agent finishes or hits a limit. Tasks already in the set when the board loads stay quiet.
+ */
+function useAttentionSignals(project: Project, loaded: boolean, attention: Task[], finished: Task[], limited: Task[]) {
+  const seen = useRef<Set<number> | null>(null);
+  const notify = useMemo(() => [...attention, ...finished, ...limited], [attention, finished, limited]);
   const keys = useMemo(() => notify.map((t) => `${t.id}:${t.updatedAt}`), [notify]);
 
   useEffect(() => {
     document.title = attention.length ? `(${attention.length}) Turtle Command Center` : 'Turtle Command Center';
-    const current = new Set(notify.map((t) => String(t.id)));
-    if (seen.current && typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
+    if (!loaded) return;
+    const current = new Set(notify.map((t) => t.id));
+    const away = document.hidden || !document.hasFocus();
+    if (seen.current && away && notifySupported && Notification.permission === 'granted' && notifyWanted()) {
       for (const t of notify) {
-        if (!seen.current.has(String(t.id))) {
-          new Notification(`#${t.id} ${t.title}`, {
-            body: t.permissions.length ? `Wants to use ${t.permissions[0].toolName}` : t.checkpoint?.summary.slice(0, 140) ?? 'Needs your input',
-            tag: `tcc-${t.id}`,
-          });
-        }
+        if (seen.current.has(t.id)) continue;
+        const n = new Notification(`${project.name}: #${t.id} ${t.title}`, { body: notifyBody(t).slice(0, 180), tag: `tcc-${t.id}` });
+        n.onclick = () => {
+          focus();
+          n.close();
+          revealCard(t.id);
+        };
       }
     }
     seen.current = current;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keys.join(), attention.length]);
+  }, [keys.join(), attention.length, loaded]);
 }
