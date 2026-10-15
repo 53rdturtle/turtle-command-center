@@ -79,6 +79,7 @@ export const api = {
   retry: (id: number) => call('POST', `/api/tasks/${id}/retry`),
   done: (id: number) => call('POST', `/api/tasks/${id}/done`),
   discard: (id: number) => call('POST', `/api/tasks/${id}/discard`),
+  openTerminal: (id: number) => call('POST', `/api/tasks/${id}/open-terminal`),
   merge: (id: number) => call<MergeResult>('POST', `/api/tasks/${id}/merge`),
   permission: (id: string, decision: 'allow' | 'always' | 'deny') => call('POST', `/api/permissions/${id}`, { decision }),
 };
