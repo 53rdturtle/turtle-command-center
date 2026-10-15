@@ -55,8 +55,9 @@ export interface TaskEvent { id: number; task_id: number; ts: number; kind: stri
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
-    headers: body ? { 'content-type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    // The server rejects mutating requests without these (see server/guard.ts).
+    headers: method === 'GET' ? undefined : { 'content-type': 'application/json', 'x-tcc': '1' },
+    body: method === 'GET' ? undefined : JSON.stringify(body ?? {}),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);

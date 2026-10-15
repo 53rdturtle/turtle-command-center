@@ -7,6 +7,7 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { MAX_CONCURRENT, PORT } from './config.ts';
 import { db, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
+import { localOnly } from './guard.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
   answerPermission, approveSplit, createTask, discard, markDone, recoverOnStartup,
@@ -17,6 +18,7 @@ import { currentBranch, getRemote, slugify } from './worktree.ts';
 const app = new Hono();
 
 app.onError((err, c) => c.json({ error: err.message }, 400));
+app.use('/api/*', localOnly);
 
 const projectDto = async (p: ProjectRow) => ({
   currentBranch: await currentBranch(p.path),
