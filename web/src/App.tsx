@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type Task } from './api.ts';
 import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
 import { ImageThumbs, useImageInput } from './images.tsx';
+import { ago } from './time.ts';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
 
@@ -441,10 +442,6 @@ function Accounts({ onClose }: { onClose: () => void }) {
 }
 
 const percent = (w: UsageWindow) => `${Math.round(w.utilization * 100)}%`;
-const ago = (ms: number) => {
-  const min = Math.round((Date.now() - ms) / 60_000);
-  return min < 1 ? 'just now' : min < 60 ? `${min}m ago` : `${Math.round(min / 60)}h ago`;
-};
 const resetLabel = (w: UsageWindow) => {
   if (!w.resetsAt) return 'reset since last report';
   const sameDay = new Date(w.resetsAt).toDateString() === new Date().toDateString();

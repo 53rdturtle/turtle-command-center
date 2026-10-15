@@ -182,6 +182,8 @@ button.ghost.toggle[aria-pressed="true"] { color: var(--accent); background: var
 .card-title { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
 .card-title h3 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
 .task-id { color: var(--muted); font-size: 13px; }
+.card-status { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.card-age { font-size: 12px; white-space: nowrap; }
 
 .pill {
   display: inline-flex;
