@@ -75,6 +75,7 @@ input, select, textarea {
   padding: 7px 10px;
   width: 100%;
 }
+input[type="checkbox"], input[type="radio"] { width: auto; padding: 0; accent-color: var(--accent); }
 textarea { resize: vertical; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
