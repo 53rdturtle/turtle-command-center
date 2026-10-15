@@ -46,6 +46,27 @@ public static class TccFolderPicker {
     void GetParent(out IShellItem parent);
     void GetDisplayName(uint sigdn, [MarshalAs(UnmanagedType.LPWStr)] out string name);
   }
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hWnd);
+
+  // Windows won't let a background process take focus from the user's window (the browser).
+  // Briefly sharing the foreground thread's input state is the standard way to be allowed to.
+  public static void ForceForeground(IntPtr hWnd) {
+    uint fgThread = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero);
+    uint thisThread = GetCurrentThreadId();
+    bool attached = fgThread != thisThread && AttachThreadInput(thisThread, fgThread, true);
+    try {
+      BringWindowToTop(hWnd);
+      SetForegroundWindow(hWnd);
+    } finally {
+      if (attached) AttachThreadInput(thisThread, fgThread, false);
+    }
+  }
+
   public static string Pick(IntPtr owner, string title) {
     var dialog = (IFileOpenDialog)new FileOpenDialog();
     dialog.SetOptions(0x20 | 0x40); // FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM
@@ -61,8 +82,14 @@ public static class TccFolderPicker {
 "@
 Add-Type -Path $dll
 }
-# A hidden topmost owner keeps the dialog in front of the browser.
-$owner = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false }
+# An invisible, topmost, focused owner window: the dialog inherits being on top and in the foreground,
+# and centers on screen with it.
+$owner = New-Object System.Windows.Forms.Form -Property @{
+  TopMost = $true; ShowInTaskbar = $false; FormBorderStyle = 'None'; Opacity = 0
+  StartPosition = 'CenterScreen'; Size = New-Object System.Drawing.Size(1, 1)
+}
+$owner.Show()
+[TccFolderPicker]::ForceForeground($owner.Handle)
 $path = [TccFolderPicker]::Pick($owner.Handle, 'Select the project repo folder')
 $owner.Dispose()
 if ($path) { [Console]::Out.Write($path) }
@@ -71,7 +98,7 @@ if ($path) { [Console]::Out.Write($path) }
 /** Cancelling exits 0 with no output on Windows, but exits 1 on macOS (osascript) and Linux (zenity). */
 function run(cmd: string, args: string[], cancelExitCode?: number) {
   return new Promise<string | null>((resolve, reject) => {
-    execFile(cmd, args, { encoding: 'utf8', env: { ...process.env, TCC_PICKER_DLL: join(DATA_DIR, 'folder-picker-v1.dll') } }, (err, stdout, stderr) => {
+    execFile(cmd, args, { encoding: 'utf8', env: { ...process.env, TCC_PICKER_DLL: join(DATA_DIR, 'folder-picker-v2.dll') } }, (err, stdout, stderr) => {
       const path = stdout.trim();
       if (path) return resolve(path);
       if (err && (err as { code?: number }).code === cancelExitCode) return resolve(null);
