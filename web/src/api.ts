@@ -149,7 +149,7 @@ export const api = {
     call<Task>('POST', `/api/projects/${slug}/tasks`, t),
   events: (id: number) => call<TaskEvent[]>('GET', `/api/tasks/${id}/events`),
   diff: (id: number) => call<TaskDiff>('GET', `/api/tasks/${id}/diff`),
-  reply: (id: number, text: string) => call('POST', `/api/tasks/${id}/reply`, { text }),
+  reply: (id: number, text: string, model?: string) => call('POST', `/api/tasks/${id}/reply`, { text, model }),
   approveSplit: (id: number, subtasks: Subtask[]) => call('POST', `/api/tasks/${id}/split/approve`, { subtasks }),
   stop: (id: number) => call('POST', `/api/tasks/${id}/stop`),
   retry: (id: number) => call('POST', `/api/tasks/${id}/retry`),
@@ -190,7 +190,7 @@ export function onStream(fn: Handler) {
   };
 }
 
-export const MODELS = ['sonnet', 'opus', 'haiku'];
+export const MODELS = ['haiku', 'sonnet', 'opus'];
 export const PERMISSION_MODES = ['acceptEdits', 'auto', 'manual', 'plan', 'bypassPermissions'];
 
 /** The agent reported done=true and is waiting for your final review; Mark done / Merge moves it to Done. */

@@ -164,6 +164,7 @@ Rules:
 - You can't ${task.branch ? 'merge your branch, ' : ''}mark the task done or discard it yourself; only the board can. To offer one of those, give the option an action (${task.branch ? '"merge", ' : ''}"done" or "discard") and clicking it runs the board's own button. Never ask the user to type or pick a reply asking you to do one of them.
 - Messages may include screenshots the user pasted, written as \`[Image: <path>]\`. Look at them with the Read tool.
 - Decide small things yourself. Ask before large, risky, or irreversible choices.
+- Stop any server or other background process you started before you report: anything left running keeps your worktree in use. Stop each one by the process ID you got when you started it. Never kill processes by matching a name, path or branch in their command line: your own session's command line contains your branch name and worktree, so that kills you.
 - On your first turn, investigate (read the code, reproduce the problem, check constraints) and report findings plus a proposed plan. Don't make large changes before the user picks a direction, unless the task is trivial.
 - If the task is clearly too big for one session, with parts that can proceed independently in parallel, call propose_split with self-contained subtask prompts instead of report_checkpoint.
 - Likewise, when your findings are a list of independent changes or suggestions (e.g. "what could be improved?"), don't bundle them into batches inside a checkpoint: call propose_split with one subtask per change, at most 6, most valuable first, and mark the ones you'd do as recommended. The user ticks which to create. Lower-value ideas go in the rationale, one line each under "Also considered".
@@ -469,11 +470,16 @@ export function createTask(project: ProjectRow, input: { title: string; descript
   return getTask(id)!;
 }
 
-export function reply(taskId: number, text: string) {
+/** Models a reply may switch the task to; `claude --resume <id> --model X` keeps the session and switches the model. */
+export const MODELS = ['haiku', 'sonnet', 'opus'];
+
+export function reply(taskId: number, text: string, model?: string) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
   if (task.status === 'running') throw new Error('Task is running; wait for its checkpoint or stop it first');
   if (task.merge_state === 'merging') throw new Error('This task is being merged right now');
+  if (model !== undefined && !MODELS.includes(model)) throw new Error(`Unknown model: ${model}`);
+  if (model && model !== task.model) updateTask(taskId, { model });
   leaveMergeQueue(task); // the work is about to change; merge again once the agent reports back
   enqueue(taskId, text);
 }
