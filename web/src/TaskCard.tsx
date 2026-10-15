@@ -1,7 +1,8 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
-import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
+import { ago, elapsed, useNow } from './time.ts';
+import { agentDone, api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -59,6 +60,17 @@ function useMergeable(task: Task, targetBranch: string | null) {
 
 type CardProps = { task: Task; parent?: Task; children: Task[]; targetBranch: string | null; defaultModel: string; tryCommand?: string };
 
+/** How long since the card last changed: how long it has waited on you, or when a running agent last did something. */
+function CardAge({ task }: { task: Task }) {
+  const now = useNow();
+  const waiting = task.permissions.length > 0 || task.status === 'needs_input' || task.status === 'split_proposed';
+  const label =
+    task.status === 'running' ? `active ${ago(task.updatedAt, now)}`
+    : waiting ? `waiting ${elapsed(task.updatedAt, now)}`
+    : ago(task.updatedAt, now);
+  return <span className="card-age muted" title={new Date(task.updatedAt).toLocaleString()}>{label}</span>;
+}
+
 export function TaskCard({ task, parent, children, targetBranch, defaultModel, tryCommand = '' }: CardProps) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [showChanges, setShowChanges] = useState(false);
@@ -66,7 +78,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
   const [copied, setCopied] = useState(false);
   const [tried, setTried] = useState<TryEnv | null>(null);
   const { busy, error, run } = useAction();
-  const status = task.permissions.length ? 'permission' : task.status;
+  const status = task.permissions.length ? 'permission' : agentDone(task) ? 'review' : task.status;
   const active = task.status === 'running' || task.status === 'queued';
   const canMerge = useMergeable(task, targetBranch);
   const hasWorktree = Boolean(task.branch && task.worktree);
@@ -114,10 +126,13 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
           <span className="task-id" title={info || undefined}>#{task.id}</span>
           <h3>{task.title}</h3>
         </div>
-        <span className={`pill pill-${status}`}>
+        <div className="card-status">
+          <CardAge task={task} />
+          <span className={`pill pill-${status}`}>
           {(status === 'running' || task.mergeState === 'merging') && <span className="spinner" />}
-          {task.permissions.length ? 'Permission' : task.mergeState ? MERGE_LABEL[task.mergeState] : STATUS_LABEL[task.status]}
-        </span>
+            {task.permissions.length ? 'Permission' : task.mergeState ? MERGE_LABEL[task.mergeState] : status === 'review' ? 'Ready for review' : STATUS_LABEL[task.status]}
+          </span>
+        </div>
       </header>
 
       <div className="meta">
@@ -280,7 +295,7 @@ function Body({ task, children, boardAction }: { task: Task; children: Task[]; b
           <ul className="subtask-status">
             {children.map((c) => <li key={c.id}>#{c.id} {c.title} <span className={`pill pill-${c.status} small`}>{STATUS_LABEL[c.status]}</span></li>)}
           </ul>
-          <ReplyBox taskId={task.id} placeholder="Message the parent session (e.g. 'Subtasks are done, integrate and verify')…" />
+          <ReplyBox taskId={task.id} placeholder="Message the parent session…" />
         </div>
       );
     case 'done':
@@ -356,26 +371,34 @@ export function enterToSubmit(submit: () => void) {
   };
 }
 
-function ReplyBox({ taskId, placeholder = 'Reply in your own words or paste a screenshot…  (Enter to send, Ctrl+Enter for new line)' }: { taskId: number; placeholder?: string }) {
+// Starts as one line and grows while focused or holding a draft, so cards waiting on you stay short.
+function ReplyBox({ taskId, placeholder = 'Reply…' }: { taskId: number; placeholder?: string }) {
   const [text, setText] = useState('');
+  const [focused, setFocused] = useState(false);
   const { busy, error, run } = useAction();
   const images = useImageInput(setText);
   const send = () => text.trim() && !images.uploading && run(async () => {
     await api.reply(taskId, text);
     setText('');
   });
+  const expanded = focused || text !== '';
   return (
-    <div className="reply">
+    // Keeping focus on button presses stops the box collapsing (and the button moving) mid-click.
+    <div className={expanded ? 'reply expanded' : 'reply'} onMouseDown={(e) => (e.target as HTMLElement).closest('button') && e.preventDefault()}>
       <textarea
-        rows={2}
+        rows={expanded ? 3 : 1}
         value={text}
         placeholder={placeholder}
+        aria-label="Reply"
         onChange={(e) => setText(e.target.value)}
         onKeyDown={enterToSubmit(send)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         {...images.handlers}
       />
       <AttachImage images={images} />
       <button disabled={busy || images.uploading || !text.trim()} onClick={send}>Send</button>
+      {focused && <small className="key-hint">Enter to send, Ctrl+Enter for new line. Paste or attach screenshots.</small>}
       <ImageThumbs text={text} uploading={images.uploading} error={images.error} />
       {error && <p className="error">{error}</p>}
     </div>

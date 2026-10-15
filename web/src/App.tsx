@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type Task } from './api.ts';
 import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
 import { ImageThumbs, useImageInput } from './images.tsx';
+import { ago } from './time.ts';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
 
@@ -9,8 +10,9 @@ export function App() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [slug, setSlug] = useState(slugFromPath);
   const [showAddProject, setShowAddProject] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showAccounts, setShowAccounts] = useState(false);
+  const [drawer, setDrawer] = useState<'settings' | 'accounts' | null>(null);
+  const toggleDrawer = (which: 'settings' | 'accounts') => setDrawer((d) => (d === which ? null : which));
+  const closeDrawer = useCallback(() => setDrawer(null), []);
 
   const reloadProjects = useCallback(() => api.projects().then(setProjects), []);
   useEffect(() => {
@@ -23,7 +25,7 @@ export function App() {
   const navigate = (next: string) => {
     history.pushState(null, '', `/p/${next}`);
     setSlug(next);
-    setShowSettings(false);
+    setDrawer((d) => (d === 'settings' ? null : d));
   };
   useEffect(() => {
     const onPop = () => setSlug(slugFromPath());
@@ -44,20 +46,25 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">🐢 <span>Turtle Command Center</span></div>
-        {projects && projects.length > 0 && (
-          <select className="project-picker" value={slug} onChange={(e) => navigate(e.target.value)} aria-label="Project">
-            {projects.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
-          </select>
-        )}
-        <button className="ghost" onClick={() => setShowAddProject(true)}>+ Project</button>
-        {project && <button className="ghost" onClick={() => setShowSettings((s) => !s)}>Settings</button>}
-        <button className="ghost" onClick={() => setShowAccounts((s) => !s)}>Accounts</button>
-        <span className="spacer" />
-        <BoardUpdate />
-        <UsagePills />
-        <AgentSlots />
-        <NotifyToggle />
+        <div className="topbar-main">
+          <div className="brand">🐢 <span>Turtle Command Center</span></div>
+          {projects && projects.length > 0 && (
+            <select className="project-picker" value={slug} onChange={(e) => navigate(e.target.value)} aria-label="Project">
+              {projects.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
+            </select>
+          )}
+          <button className="ghost" onClick={() => setShowAddProject(true)}>+ Project</button>
+          {project && (
+            <button className="ghost toggle" aria-pressed={drawer === 'settings'} onClick={() => toggleDrawer('settings')}>Settings</button>
+          )}
+          <button className="ghost toggle" aria-pressed={drawer === 'accounts'} onClick={() => toggleDrawer('accounts')}>Accounts</button>
+        </div>
+        <div className="topbar-status">
+          <BoardUpdate />
+          <UsagePills />
+          <AgentSlots />
+          <NotifyToggle />
+        </div>
       </header>
 
       {showAddProject && (
@@ -78,8 +85,8 @@ export function App() {
         </div>
       )}
 
-      {showAccounts && <Accounts />}
-      {project && showSettings && <ProjectSettings project={project} onSaved={reloadProjects} />}
+      {drawer === 'accounts' && <Accounts onClose={closeDrawer} />}
+      {project && drawer === 'settings' && <ProjectSettings project={project} onSaved={reloadProjects} onClose={closeDrawer} />}
       {project && <Board key={project.slug} project={project} />}
     </div>
   );
@@ -111,7 +118,8 @@ function Board({ project }: { project: Project }) {
   const all = [...tasks.values()];
   const byUpdate = (a: Task, b: Task) => a.updatedAt - b.updatedAt;
   const attention = all.filter(needsAttention).sort(byUpdate);
-  const working = all.filter((t) => !needsAttention(t) && !t.mergeState && ['running', 'queued', 'limited'].includes(t.status)).sort(byUpdate);
+  const running = all.filter((t) => !needsAttention(t) && !t.mergeState && t.status === 'running').sort(byUpdate);
+  const waiting = all.filter((t) => !needsAttention(t) && !t.mergeState && ['queued', 'limited'].includes(t.status)).sort(byUpdate);
   // Merging now, then the queue in order, then tasks whose agent is resolving conflicts before rejoining it.
   const mergeOrder = (t: Task) => t.mergePosition ?? Infinity;
   const mergeQueue = all.filter((t) => !needsAttention(t) && t.mergeState).sort((a, b) => mergeOrder(a) - mergeOrder(b) || byUpdate(a, b));
@@ -119,7 +127,7 @@ function Board({ project }: { project: Project }) {
   const review = all.filter(agentDone).sort(byUpdate);
   const done = all.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt);
 
-  const limited = working.filter((t) => t.status === 'limited');
+  const limited = waiting.filter((t) => t.status === 'limited');
 
   useAttentionSignals(project, loaded, attention, review, limited);
 
@@ -146,8 +154,9 @@ function Board({ project }: { project: Project }) {
           {review.length > 0 && <Section title="Ready for review" count={review.length}>{review.map(card)}</Section>}
         </div>
         <div className="column">
-          <h1 className="column-title">Working <span className="count">{working.length + mergeQueue.length + parked.length}</span></h1>
-          <Section title="Running" count={working.length} empty="No agents running.">{working.map(card)}</Section>
+          <h1 className="column-title">Working <span className="count">{running.length + waiting.length + mergeQueue.length + parked.length}</span></h1>
+          <Section title="Running" count={running.length} empty="No agents running.">{running.map(card)}</Section>
+          {waiting.length > 0 && <Section title="Waiting" count={waiting.length}>{waiting.map(card)}</Section>}
           {mergeQueue.length > 0 && (
             <Section title={`Merging into ${project.currentBranch ?? 'your branch'}`} count={mergeQueue.length}>{mergeQueue.map(card)}</Section>
           )}
@@ -180,6 +189,7 @@ function NewTask({ project }: { project: Project }) {
   const [description, setDescription] = useState('');
   const [model, setModel] = useState(project.defaultModel);
   const [expanded, setExpanded] = useState(false);
+  const [descFocused, setDescFocused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const images = useImageInput(setDescription);
@@ -222,9 +232,13 @@ function NewTask({ project }: { project: Project }) {
           onChange={(e) => setDescription(e.target.value)}
           onKeyDown={enterToSubmit(submit)}
           {...images.handlers}
-          placeholder="Details, context, links, pasted screenshots… (optional, Enter to start, Ctrl+Enter for new line)"
+          onFocus={() => setDescFocused(true)}
+          onBlur={() => setDescFocused(false)}
+          placeholder="Details (optional)…"
+          aria-label="Task details"
         />
       )}
+      {expanded && descFocused && <small className="key-hint">Enter to start, Ctrl+Enter for new line. Paste screenshots here.</small>}
       {expanded && <ImageThumbs text={description} uploading={images.uploading} error={images.error} />}
       {error && <p className="error">{error}</p>}
     </form>
@@ -288,11 +302,37 @@ function AddProject({ onClose, onAdded }: { onClose: () => void; onAdded: (p: Pr
   );
 }
 
-function ProjectSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {
+/**
+ * A side panel over the board. Closes on ×, Escape, or a click outside it. Blurs the focused field first so
+ * save-on-blur inputs still save.
+ */
+function Drawer({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  const close = useCallback(() => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    onClose();
+  }, [onClose]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close();
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [close]);
+  return (
+    <div className="drawer-backdrop" onClick={(e) => e.target === e.currentTarget && close()}>
+      <aside className="drawer panel" role="dialog" aria-label={title}>
+        <div className="drawer-head">
+          <h2>{title}</h2>
+          <button className="ghost close" aria-label="Close" title="Close (Esc)" onClick={close}>×</button>
+        </div>
+        {children}
+      </aside>
+    </div>
+  );
+}
+
+function ProjectSettings({ project, onSaved, onClose }: { project: Project; onSaved: () => void; onClose: () => void }) {
   const save = (patch: Partial<Project>) => api.updateProject(project.slug, patch).then(onSaved);
   return (
-    <section className="panel">
-      <h2>{project.name} settings</h2>
+    <Drawer title={`${project.name} settings`} onClose={onClose}>
       <p className="muted mono">{project.path}{project.remote && <> · {project.remote}</>}</p>
       <div className="row">
         <label>Default model
@@ -333,14 +373,14 @@ function ProjectSettings({ project, onSaved }: { project: Project; onSaved: () =
           ))}
         </ul>
       )}
-    </section>
+    </Drawer>
   );
 }
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 /** Claude subscriptions to run agents on. When one hits its usage limit, tasks continue on the next. */
-function Accounts() {
+function Accounts({ onClose }: { onClose: () => void }) {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [form, setForm] = useState({ name: '', token: '' });
   const [error, setError] = useState<string | null>(null);
@@ -362,8 +402,7 @@ function Accounts() {
   };
 
   return (
-    <section className="panel">
-      <h2>Accounts</h2>
+    <Drawer title="Accounts" onClose={onClose}>
       <p className="muted">
         Agents run on the first account below that has usage left. When it hits its limit, its tasks resume the same
         session on the next one.
@@ -404,15 +443,11 @@ function Accounts() {
         this machine's command-center database only.
       </p>
       {error && <p className="error">{error}</p>}
-    </section>
+    </Drawer>
   );
 }
 
 const percent = (w: UsageWindow) => `${Math.round(w.utilization * 100)}%`;
-const ago = (ms: number) => {
-  const min = Math.round((Date.now() - ms) / 60_000);
-  return min < 1 ? 'just now' : min < 60 ? `${min}m ago` : `${Math.round(min / 60)}h ago`;
-};
 const resetLabel = (w: UsageWindow) => {
   if (!w.resetsAt) return 'reset since last report';
   const sameDay = new Date(w.resetsAt).toDateString() === new Date().toDateString();
