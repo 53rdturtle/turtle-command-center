@@ -7,16 +7,18 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { MAX_CONCURRENT, PORT } from './config.ts';
 import { db, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
+import { localOnly } from './guard.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
   answerPermission, approveSplit, createTask, diff, discard, markDone, recoverOnStartup,
-  merge, openInTerminal, reply, retry, runningCount, stop, subscribe, toDto,
+  merge, mergeable, openInTerminal, reply, retry, runningCount, stop, subscribe, toDto,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
 
 const app = new Hono();
 
 app.onError((err, c) => c.json({ error: err.message }, 400));
+app.use('/api/*', localOnly);
 
 const projectDto = async (p: ProjectRow) => ({
   currentBranch: await currentBranch(p.path),
@@ -95,6 +97,7 @@ app.post('/api/tasks/:id/retry', (c) => (retry(taskId(c)), c.json({ ok: true }))
 app.post('/api/tasks/:id/done', async (c) => (await markDone(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/discard', async (c) => (await discard(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/open-terminal', async (c) => (await openInTerminal(taskId(c)), c.json({ ok: true })));
+app.get('/api/tasks/:id/mergeable', async (c) => c.json({ mergeable: await mergeable(taskId(c)) }));
 app.post('/api/tasks/:id/merge', async (c) => c.json(await merge(taskId(c))));
 
 app.post('/api/permissions/:id', async (c) => {
@@ -130,6 +133,6 @@ if (existsSync(dist)) {
 
 serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, () => {
   console.log(`🐢 Turtle Command Center API on http://localhost:${PORT}`);
-  recoverOnStartup();
+  recoverOnStartup().catch((err) => console.error('[tasks] startup recovery failed:', err));
 });
 

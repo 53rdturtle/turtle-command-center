@@ -27,6 +27,8 @@ export interface Task {
   split: Split | null;
   queuedPrompt: string | null;
   error: string | null;
+  /** The agent is resolving merge conflicts; the board merges when it's done. */
+  merging: boolean;
   retryAt: number | null;
   costUsd: number;
   lastActivity: string | null;
@@ -48,7 +50,9 @@ export interface Project {
 
 export type MergeResult =
   | { ok: true; target: string }
-  | { ok: false; target: string; conflicts: string[]; message: string };
+  | { ok: false; target: string; conflicts: string[]; message: string }
+  /** Conflicts were handed to the task's agent; the merge finishes on its own. */
+  | { ok: false; resolving: true; target: string; conflicts: string[] };
 
 export interface DiffFile {
   path: string;
@@ -67,8 +71,9 @@ export interface TaskEvent { id: number; task_id: number; ts: number; kind: stri
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
-    headers: body ? { 'content-type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    // The server rejects mutating requests without these (see server/guard.ts).
+    headers: method === 'GET' ? undefined : { 'content-type': 'application/json', 'x-tcc': '1' },
+    body: method === 'GET' ? undefined : JSON.stringify(body ?? {}),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -93,6 +98,7 @@ export const api = {
   done: (id: number) => call('POST', `/api/tasks/${id}/done`),
   discard: (id: number) => call('POST', `/api/tasks/${id}/discard`),
   openTerminal: (id: number) => call('POST', `/api/tasks/${id}/open-terminal`),
+  mergeable: (id: number) => call<{ mergeable: boolean }>('GET', `/api/tasks/${id}/mergeable`).then((r) => r.mergeable),
   merge: (id: number) => call<MergeResult>('POST', `/api/tasks/${id}/merge`),
   permission: (id: string, decision: 'allow' | 'always' | 'deny') => call('POST', `/api/permissions/${id}`, { decision }),
 };

@@ -114,6 +114,9 @@ export class CliRunner implements AgentRunner {
     // An API key in the environment would bill the key instead of the subscription login.
     delete env.ANTHROPIC_API_KEY;
 
+    // Windows reports a missing cwd as "spawn claude ENOENT", which would send you looking for the wrong problem.
+    if (!existsSync(req.cwd)) throw new Error(`The task's working directory no longer exists: ${req.cwd}`);
+
     const stdin = openSync(files.prompt, 'r');
     const stdout = openSync(files.log, 'a');
     const stderr = openSync(files.errLog, 'a');
@@ -121,8 +124,9 @@ export class CliRunner implements AgentRunner {
       const child = spawn(CLAUDE_BIN, args, {
         cwd: req.cwd, env, detached: true, windowsHide: true, stdio: [stdin, stdout, stderr],
       });
-      if (!child.pid) throw new Error(`Failed to start ${CLAUDE_BIN}`);
+      // Listen before anything can throw: an unhandled 'error' event (e.g. ENOENT) crashes the whole server.
       child.on('error', () => {}); // exit is detected by polling the pid
+      if (!child.pid) throw new Error(`Failed to start ${CLAUDE_BIN}. Is it installed and on PATH?`);
       child.unref();
       return { pid: child.pid, log: files.log, errLog: files.errLog };
     } finally {

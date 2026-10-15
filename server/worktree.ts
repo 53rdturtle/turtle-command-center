@@ -64,13 +64,19 @@ export async function currentBranch(repo: string) {
   }
 }
 
+/** Whether merging would bring anything in: commits the checkout lacks, or uncommitted edits (merge commits those first). */
+export async function hasWorkToMerge(repo: string, worktree: string, branch: string) {
+  if ((await git(worktree, 'status', '--porcelain')) !== '') return true;
+  return Number(await git(repo, 'rev-list', '--count', `HEAD..${branch}`)) > 0;
+}
+
 export type MergeResult =
   | { ok: true; target: string }
   | { ok: false; target: string; conflicts: string[]; message: string };
 
 /**
  * Merges a task branch into whatever branch the main checkout is on.
- * On conflicts the merge is aborted, leaving the user's checkout as it was.
+ * On conflicts nothing is merged, leaving the user's checkout as it was.
  */
 export async function mergeTaskBranch(repo: string, worktree: string, branch: string, taskId: number, message: string): Promise<MergeResult> {
   if ((await git(worktree, 'status', '--porcelain')) !== '') {
@@ -78,6 +84,16 @@ export async function mergeTaskBranch(repo: string, worktree: string, branch: st
     await git(worktree, 'commit', '-m', `tcc: uncommitted work from task #${taskId}`);
   }
   const target = (await currentBranch(repo)) ?? 'HEAD';
+  // Find conflicts in memory first. A conflicting `git merge` writes conflict markers into the checkout, and when
+  // the project is this app, that restarts the dev server before the merge can be aborted or reported.
+  try {
+    await git(repo, 'merge-tree', '--write-tree', '--name-only', 'HEAD', branch);
+  } catch (err: any) {
+    // Exit code 1 means conflicts. stdout is the tree id, the conflicted paths, a blank line, then git's messages.
+    if (err.code !== 1) throw err;
+    const [files, messages = ''] = String(err.stdout).split(/\r?\n\r?\n/);
+    return { ok: false, target, conflicts: files.split(/\r?\n/).slice(1).filter(Boolean), message: messages.trim() };
+  }
   try {
     await git(repo, 'merge', '--no-ff', '-m', message, branch);
   } catch (err: any) {
@@ -90,6 +106,23 @@ export async function mergeTaskBranch(repo: string, worktree: string, branch: st
   await git(repo, 'worktree', 'remove', '--force', worktree);
   await git(repo, 'branch', '-d', branch).catch(() => {});
   return { ok: true, target };
+}
+
+/** Whether a "Merge task #N" commit made by mergeTaskBranch is in the checkout's history. */
+export async function wasMerged(repo: string, taskId: number) {
+  return (await git(repo, 'log', '-1', '--format=%H', `--grep=^Merge task #${taskId}:`, 'HEAD').catch(() => '')) !== '';
+}
+
+/** Re-creates a task's worktree at its old path from its branch. False if the branch is gone. */
+export async function restoreWorktree(repo: string, path: string, branch: string) {
+  try {
+    await git(repo, 'rev-parse', '--verify', `refs/heads/${branch}`);
+  } catch {
+    return false;
+  }
+  await git(repo, 'worktree', 'prune');
+  await git(repo, 'worktree', 'add', path, branch);
+  return true;
 }
 
 export async function discardWorktree(repo: string, path: string, branch: string) {

@@ -122,10 +122,18 @@ function Board({ project }: { project: Project }) {
   return (
     <main className="board">
       <NewTask project={project} />
-      <Section title="Needs you" count={attention.length} empty="Nothing waiting on you. 🎉">{attention.map(card)}</Section>
-      {review.length > 0 && <Section title="Ready for review" count={review.length}>{review.map(card)}</Section>}
-      <Section title="Working" count={working.length} empty="No agents running.">{working.map(card)}</Section>
-      {parked.length > 0 && <Section title="Split into subtasks" count={parked.length}>{parked.map(card)}</Section>}
+      <div className="columns">
+        <div className="column">
+          <h1 className="column-title">Action required <span className="count">{attention.length + review.length}</span></h1>
+          <Section title="Needs you" count={attention.length} empty="Nothing waiting on you. 🎉">{attention.map(card)}</Section>
+          {review.length > 0 && <Section title="Ready for review" count={review.length}>{review.map(card)}</Section>}
+        </div>
+        <div className="column">
+          <h1 className="column-title">Working <span className="count">{working.length + parked.length}</span></h1>
+          <Section title="Running" count={working.length} empty="No agents running.">{working.map(card)}</Section>
+          {parked.length > 0 && <Section title="Split into subtasks" count={parked.length}>{parked.map(card)}</Section>}
+        </div>
+      </div>
       {done.length > 0 && (
         <section className="section">
           <button className="section-toggle" onClick={toggleDone}>
