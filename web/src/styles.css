@@ -325,3 +325,6 @@ button.chip-button:hover { color: var(--text); }
 .usage-pill { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px solid var(--border); border-radius: 99px; }
 .usage-pill-active { border-color: var(--accent); }
 .usage-limited { color: var(--danger); }
+.panel .try-command { margin: 12px 0; }
+.panel .try-command span { font-size: 12px; }
+.try-note { font-size: 13px; margin: 8px 0 0; }

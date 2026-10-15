@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent } from './api.ts';
+import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -56,13 +56,14 @@ function useMergeable(task: Task, targetBranch: string | null) {
   return eligible && mergeable;
 }
 
-type CardProps = { task: Task; parent?: Task; children: Task[]; targetBranch: string | null; defaultModel: string };
+type CardProps = { task: Task; parent?: Task; children: Task[]; targetBranch: string | null; defaultModel: string; tryCommand?: string };
 
-export function TaskCard({ task, parent, children, targetBranch, defaultModel }: CardProps) {
+export function TaskCard({ task, parent, children, targetBranch, defaultModel, tryCommand = '' }: CardProps) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [showChanges, setShowChanges] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [tried, setTried] = useState<TryEnv | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : task.status;
   const active = task.status === 'running' || task.status === 'queued';
@@ -71,6 +72,11 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel }:
   const diff = useDiff(task, hasWorktree && (showChanges || !['running', 'queued'].includes(task.status)));
   const merge = () => run(() => api.merge(task.id));
   const target = targetBranch ?? 'your branch';
+  // Checkpoint options tagged with a board action run the matching card button; null hides an option that can't run now.
+  const boardAction = (action: NonNullable<Option['action']>) =>
+    action === 'merge' ? (canMerge ? merge : null)
+    : action === 'done' ? (task.status !== 'done' ? () => run(() => api.done(task.id)) : null)
+    : () => setConfirmDiscard(true);
 
   const resumeCmd = task.sessionId && task.worktree ? `cd "${task.worktree}" && claude --resume ${task.sessionId}` : null;
   const copyResume = async () => {
@@ -137,9 +143,16 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel }:
           </p>
         )}
         {task.permissions.map((p) => <PermissionRequest key={p.id} p={p} />)}
-        <Body task={task} children={children} />
+        <Body task={task} children={children} boardAction={boardAction} />
       </div>
 
+      {tried && (
+        <p className="muted try-note">
+          Opened a terminal in the worktree{tryCommand && <> running <code>{tryCommand}</code></>}. A copy of this board started there
+          uses dev port {tried.TCC_DEV_PORT} and API port {tried.TCC_PORT}.{' '}
+          <button className="ghost small" onClick={() => setTried(null)}>×</button>
+        </p>
+      )}
       {task.mergeFailure && <MergeFailureNotice taskId={task.id} failure={task.mergeFailure} />}
       {error && <p className="error">{error}</p>}
 
@@ -172,6 +185,16 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel }:
               )}
               <MenuItem danger onClick={() => setConfirmDiscard(true)}>Discard…</MenuItem>
             </Menu>
+            {hasWorktree && !active && (
+              <button
+                className="ghost"
+                disabled={busy}
+                onClick={() => run(async () => setTried(await api.tryIt(task.id)))}
+                title={tryCommand ? `Run "${tryCommand}" in this task's worktree (change it in project settings)` : "Open a shell in this task's worktree (set a try command in project settings)"}
+              >
+                Try it
+              </button>
+            )}
             {primary && (
               <button className={primary.quiet ? 'ghost' : ''} disabled={busy} onClick={() => run(primary.run)} title={primary.title}>
                 {primary.label}
@@ -229,7 +252,9 @@ function ContextChip({ task }: { task: Task }) {
   );
 }
 
-function Body({ task, children }: { task: Task; children: Task[] }) {
+type BoardActionFn = (action: NonNullable<Option['action']>) => (() => unknown) | null;
+
+function Body({ task, children, boardAction }: { task: Task; children: Task[]; boardAction: BoardActionFn }) {
   switch (task.status) {
     case 'running':
       return <p className="activity">{task.lastActivity ?? 'Starting session…'}</p>;
@@ -244,7 +269,7 @@ function Body({ task, children }: { task: Task; children: Task[] }) {
     case 'failed':
       return <pre className="error-box">{task.error}</pre>;
     case 'needs_input':
-      return task.checkpoint ? <QuickReply task={task} /> : null;
+      return task.checkpoint ? <QuickReply task={task} boardAction={boardAction} /> : null;
     case 'split_proposed':
       return task.split ? <SplitReview task={task} /> : null;
     case 'split':
@@ -286,17 +311,20 @@ function Summary({ checkpoint }: { checkpoint: Checkpoint }) {
   );
 }
 
-function QuickReply({ task }: { task: Task }) {
+function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActionFn }) {
   const cp = task.checkpoint!;
   const { busy, error, run } = useAction();
+  const options = cp.options
+    .map((o) => ({ ...o, onClick: o.action ? boardAction(o.action) : () => run(() => api.reply(task.id, o.label)) }))
+    .filter((o) => o.onClick);
   return (
     <div>
       {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
       <Summary checkpoint={cp} />
-      {cp.options.length > 0 && (
+      {options.length > 0 && (
         <div className="options">
-          {cp.options.map((o, i) => (
-            <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={() => run(() => api.reply(task.id, o.label))}>
+          {options.map((o, i) => (
+            <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={o.onClick!}>
               <span>{o.label}</span>
               {o.detail && <small>{o.detail}</small>}
             </button>

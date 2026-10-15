@@ -3,7 +3,7 @@
 One page per project for supervising several Claude Code agents at once.
 
 - **Create a task**: it gets its own git worktree + branch and a Claude Code session that starts investigating immediately.
-- **Quick replies**: each agent turn ends with a summary + one-click options (or type your own reply).
+- **Quick replies**: each agent turn ends with a summary + one-click options (or type your own reply). When an agent suggests merging, marking done or discarding, that option runs the board action directly.
 - **Split**: when a task is too big, the agent proposes subtasks; edit them, approve, and they run in parallel.
 - **Permissions** show up as cards (Allow / Always allow / Deny).
 
@@ -41,6 +41,7 @@ Requires the `claude` CLI, logged in (`claude login`). Sessions run on your Clau
 |---|---|---|
 | `TCC_PORT` | `7777` | |
 | `TCC_MAX_CONCURRENT` | `5` | Default for agents running at once across all projects; extra tasks queue. Change it live by editing the number in the board header (saved in the DB, overrides this) |
+| `TCC_DEV_PORT` | `5173` | Vite dev server port (`npm run dev`) |
 | `TCC_DATA_DIR` | `~/.turtle-cc` | SQLite DB + task worktrees |
 | `TCC_CLAUDE_BIN` | `claude` | |
 
@@ -65,6 +66,10 @@ only share the SQLite database and log files.
   It refuses up front if that checkout has uncommitted changes to tracked files (it lists them so you can commit or stash),
   a detached HEAD, or a merge, rebase or cherry-pick in progress. On conflicts the merge is aborted (your checkout is
   untouched) and you can ask the agent to resolve them; other git errors are shown as-is.
+- **Try it** opens a terminal in the task's worktree and runs the project's *Try command* (project settings; e.g.
+  `npm install && npm run dev`), or just a shell when there is none. The terminal gets free ports in `TCC_PORT` and
+  `TCC_DEV_PORT` and a sandbox `TCC_DATA_DIR` (`~/.turtle-cc/try/<task>`), so when the project is this app, the copy
+  under test runs beside your board with its own empty database instead of picking up your tasks.
 - **Mark done** commits leftover changes and removes the worktree but keeps the `tcc/...` branch.
   **Discard** deletes the worktree and the branch.
 - **Accounts** (header button): agents run on the first account with usage left. When it hits its usage limit, its tasks
