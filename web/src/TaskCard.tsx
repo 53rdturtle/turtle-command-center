@@ -207,14 +207,11 @@ function Summary({ checkpoint }: { checkpoint: Checkpoint }) {
 function QuickReply({ task }: { task: Task }) {
   const cp = task.checkpoint!;
   const { busy, error, run } = useAction();
-  const [followUp, setFollowUp] = useState(false);
-  const showReply = !cp.done || followUp;
   return (
     <div>
       {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
       <Summary checkpoint={cp} />
-      {cp.done && <button className="link" onClick={() => setFollowUp((f) => !f)}>{followUp ? 'Hide follow-up' : 'Follow up…'}</button>}
-      {showReply && cp.options.length > 0 && (
+      {cp.options.length > 0 && (
         <div className="options">
           {cp.options.map((o, i) => (
             <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={() => run(() => api.reply(task.id, o.label))}>
@@ -225,7 +222,7 @@ function QuickReply({ task }: { task: Task }) {
         </div>
       )}
       {error && <p className="error">{error}</p>}
-      {showReply && <ReplyBox taskId={task.id} />}
+      <ReplyBox taskId={task.id} />
     </div>
   );
 }
