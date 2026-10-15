@@ -2,14 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { LIMIT_RETRY_MS } from './config.ts';
 import {
-  addEvent, db, DB_PATH, getMaxConcurrent, getPermission, getProject, getTask, lastEvent, pendingPermissions,
-  saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
-  type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
+  addEvent, db, DB_PATH, getAccount, getMaxConcurrent, getPermission, getProject, getTask, lastEvent, listAccounts,
+  pendingPermissions, saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
+  type AccountRow, type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { openResumeTerminal } from './openTerminal.ts';
 import {
-  createWorktree, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, wasMerged,
+  createWorktree, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff, wasMerged,
+  type MergeResult,
 } from './worktree.ts';
 
 /**
@@ -111,6 +112,8 @@ export function toDto(t: TaskRow) {
     description: t.description,
     status: t.status,
     model: t.model,
+    // Only worth showing once there is more than one account to fail over between.
+    account: t.account_id && listAccounts().length > 1 ? (getAccount(t.account_id)?.name ?? null) : null,
     sessionId: t.started ? t.session_id : null,
     worktree: t.worktree,
     branch: t.branch,
@@ -118,6 +121,7 @@ export function toDto(t: TaskRow) {
     split: t.split ? (JSON.parse(t.split) as SplitProposal) : null,
     queuedPrompt: t.status === 'queued' || t.status === 'limited' ? t.pending_prompt : null,
     error: t.error,
+    merging: t.merge_state === 'resolving',
     retryAt: t.retry_at,
     costUsd: t.cost_usd,
     lastActivity: t.status === 'running' ? (lastEvent(t.id)?.text ?? null) : null,
@@ -159,6 +163,51 @@ function initialPrompt(task: TaskRow) {
   return prompt;
 }
 
+// ---------- accounts ----------
+
+/** The first account, in failover order, that isn't cooling down from a usage limit. */
+function availableAccount(): AccountRow | undefined {
+  const now = Date.now();
+  return listAccounts().find((a) => !a.limited_until || a.limited_until <= now);
+}
+
+/** When the next limited account frees up. */
+const nextAccountReset = () => Math.min(...listAccounts().map((a) => a.limited_until ?? Date.now()));
+
+/** Usage-limit messages from the API sometimes end in the reset time as `|<unix seconds>`. */
+function limitResetAt(message: string) {
+  const epoch = Number(message.match(/\|(\d{10})\b/)?.[1]);
+  return epoch * 1000 > Date.now() ? epoch * 1000 : Date.now() + LIMIT_RETRY_MS;
+}
+
+export function accountsDto() {
+  const now = Date.now();
+  return listAccounts().map((a) => ({
+    id: a.id,
+    name: a.name,
+    usesToken: Boolean(a.token),
+    limitedUntil: a.limited_until && a.limited_until > now ? a.limited_until : null,
+    running: (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'running' AND account_id = ?`).get(a.id) as { n: number }).n,
+  }));
+}
+
+export function addAccount(name: string, token: string) {
+  db.prepare('INSERT INTO accounts (name, token, created_at) VALUES (?, ?, ?)').run(name, token, Date.now());
+  pump(); // tasks parked for lack of an account can go now
+}
+
+export function removeAccount(id: number) {
+  if (listAccounts().length <= 1) throw new Error('Keep at least one account');
+  db.prepare('DELETE FROM accounts WHERE id = ?').run(id); // its running tasks finish on the token they started with
+}
+
+/** For when you know the limit has reset (or was a false alarm). */
+export function clearAccountLimit(id: number) {
+  db.prepare('UPDATE accounts SET limited_until = NULL WHERE id = ?').run(id);
+  for (const t of tasksWithStatus('limited')) updateTask(t.id, { status: 'queued', retry_at: null });
+  pump();
+}
+
 // ---------- scheduler ----------
 
 const runningCount = () => (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'running'`).get() as { n: number }).n;
@@ -183,15 +232,22 @@ function pump() {
   while (runningCount() < getMaxConcurrent()) {
     const next = tasksWithStatus('queued')[0];
     if (!next) return;
-    updateTask(next.id, { status: 'running', checkpoint: null, split: null, error: null });
-    start(next).catch((err) => {
+    const account = availableAccount();
+    if (!account) {
+      // Every account is out of usage: park the queue until the first one resets.
+      const retryAt = nextAccountReset();
+      for (const t of tasksWithStatus('queued')) updateTask(t.id, { status: 'limited', retry_at: retryAt });
+      return;
+    }
+    updateTask(next.id, { status: 'running', checkpoint: null, split: null, error: null, account_id: account.id });
+    start(next, account).catch((err) => {
       updateTask(next.id, { status: 'failed', error: String(err?.message ?? err), run_ref: null });
       pump();
     });
   }
 }
 
-async function start(task: TaskRow) {
+async function start(task: TaskRow, account: AccountRow) {
   const project = getProject(task.project_id)!;
   if (!task.worktree) {
     const parent = task.parent_id ? getTask(task.parent_id) : undefined;
@@ -217,6 +273,7 @@ async function start(task: TaskRow) {
     permissionMode: project.permission_mode,
     dbPath: DB_PATH,
     systemPrompt: systemPrompt(fresh),
+    oauthToken: account.token,
   });
   updateTask(task.id, { session_id: sessionId, pending_prompt: null, run_prompt: prompt, run_ref: JSON.stringify(ref), run_offset: 0 });
   addEvent(task.id, 'user', prompt);
@@ -257,13 +314,17 @@ function finish(taskId: number, result: RunResult) {
     // Stopped by the user; stop() already set the final status.
     updateTask(taskId, base);
   } else if (result.usageLimited) {
-    updateTask(taskId, {
-      ...base,
-      status: 'limited',
-      retry_at: Date.now() + LIMIT_RETRY_MS,
-      pending_prompt: task.started ? 'You were interrupted by a usage limit. Continue where you left off.' : task.run_prompt,
-      error: result.resultText,
-    });
+    const limited = task.account_id ? getAccount(task.account_id) : undefined;
+    if (limited) db.prepare('UPDATE accounts SET limited_until = ? WHERE id = ?').run(limitResetAt(result.resultText), limited.id);
+    const pending_prompt = task.started ? 'You were interrupted by a usage limit. Continue where you left off.' : task.run_prompt;
+    const fallback = availableAccount();
+    if (fallback) {
+      // Sessions are stored locally, not per account, so the next account resumes the same session.
+      updateTask(taskId, { ...base, status: 'queued', retry_at: null, pending_prompt, error: null });
+      addEvent(taskId, 'user', `${limited?.name ?? 'The account'} hit its usage limit; continuing on ${fallback.name}.`);
+    } else {
+      updateTask(taskId, { ...base, status: 'limited', retry_at: nextAccountReset(), pending_prompt, error: result.resultText });
+    }
   } else if (result.isError) {
     updateTask(taskId, { ...base, status: 'failed', error: result.resultText });
   } else if (task.split) {
@@ -275,6 +336,7 @@ function finish(taskId: number, result: RunResult) {
     const checkpoint: Checkpoint = { summary: result.resultText || '_The agent ended its turn without a summary._', options: [] };
     updateTask(taskId, { ...base, status: 'needs_input', checkpoint: JSON.stringify(checkpoint) });
   }
+  continueMerge(taskId);
 }
 
 // Retry tasks whose usage-limit cool-down has passed.
@@ -319,6 +381,8 @@ async function repairWorktrees() {
 
 export async function recoverOnStartup() {
   await repairWorktrees();
+  // A conflict-resolving run that ended while the server was down: finish (or drop) its merge.
+  for (const t of tasksWithStatus('needs_input')) if (t.merge_state === 'resolving') continueMerge(t.id);
   for (const t of tasksWithStatus('running')) {
     if (t.run_ref) {
       attach(t.id); // if the process has since exited, attach finishes it from its log
@@ -378,18 +442,90 @@ export async function markDone(taskId: number) {
   updateTask(taskId, { status: 'done', worktree: task.branch ? null : task.worktree });
 }
 
-export async function merge(taskId: number) {
+/** Automatic resolve-and-retry rounds per Merge click before the board asks you instead. */
+const MAX_MERGE_ATTEMPTS = 2;
+
+export type MergeOutcome = MergeResult | { ok: false; resolving: true; target: string; conflicts: string[] };
+
+let mergeChain: Promise<unknown> = Promise.resolve();
+/** Merges run one at a time, so two tasks never land on the checkout at once. */
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const next = mergeChain.then(fn, fn);
+  mergeChain = next.catch(() => {});
+  return next;
+}
+
+export async function merge(taskId: number): Promise<MergeOutcome> {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
   if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
-  if (task.status === 'running') throw new Error('Task is running; wait for its checkpoint or stop it first');
+  if (task.status === 'running' || task.status === 'queued') throw new Error('Task is running; wait for its checkpoint or stop it first');
+  updateTask(taskId, { merge_attempts: 0 });
+  return serialized(() => attemptMerge(taskId));
+}
+
+/**
+ * Merges the task branch; on conflicts, hands them to the task's own agent, which knows what its change is for.
+ * Once it reports done, `finish` calls this again.
+ */
+async function attemptMerge(taskId: number): Promise<MergeOutcome> {
+  const task = getTask(taskId)!;
+  if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
   const project = getProject(task.project_id)!;
   const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, `Merge task #${taskId}: ${task.title}`);
   if (result.ok) {
-    updateTask(taskId, { status: 'done', worktree: null, branch: null });
+    updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null });
     addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
+    return result;
   }
-  return result;
+  if (!result.conflicts.length || task.merge_attempts >= MAX_MERGE_ATTEMPTS) {
+    updateTask(taskId, { merge_state: null });
+    return result;
+  }
+  updateTask(taskId, { merge_state: 'resolving', merge_attempts: task.merge_attempts + 1 });
+  addEvent(taskId, 'user', `Merging into \`${result.target}\` conflicts in ${result.conflicts.join(', ')}; asked the agent to resolve them.`);
+  enqueue(taskId, resolveConflictsPrompt(result.target, result.conflicts));
+  return { ok: false, resolving: true, target: result.target, conflicts: result.conflicts };
+}
+
+function resolveConflictsPrompt(target: string, conflicts: string[]) {
+  return `The user clicked Merge, but your branch conflicts with \`${target}\`, which has moved on since you branched. Conflicting files: ${conflicts.join(', ')}.
+
+Bring your branch up to date in your worktree:
+1. Run \`git merge ${target}\`.
+2. Resolve each conflict so that both your change and the other side's intent survive. To understand the other side, read the "Merge task #N" commits on ${target} that touched these files (\`git log ${target} --merges -- <file>\`); each message says what that task was for.
+3. Run the project's checks (typecheck, tests) and fix anything the merge broke.
+4. Commit the merge.
+
+Then call report_checkpoint with done=true and a one-line summary of how you resolved it; the board will merge your branch automatically. If a conflict needs a product decision (the two sides want different behavior), don't guess: report with done=false and give the user options.`;
+}
+
+/** Called when a conflict-resolving run ends: merge if the agent says it's resolved, otherwise leave it to the user. */
+function continueMerge(taskId: number) {
+  const task = getTask(taskId)!;
+  // A usage-limited run resumes later, on this account or the next.
+  if (task.merge_state !== 'resolving' || task.status === 'limited' || task.status === 'queued') return;
+  const cp = task.checkpoint ? (JSON.parse(task.checkpoint) as Checkpoint) : null;
+  if (task.status !== 'needs_input' || !cp?.done) {
+    updateTask(taskId, { merge_state: null });
+    return;
+  }
+  serialized(() => attemptMerge(taskId))
+    .then((result) => {
+      if (result.ok || 'resolving' in result) return;
+      const files = result.conflicts.length ? `It still conflicts in ${result.conflicts.join(', ')}.` : result.message;
+      const checkpoint: Checkpoint = {
+        summary: `The agent resolved the conflicts, but merging into ${result.target} still fails. ${files}`.slice(0, 350),
+        details: result.message ? `\`\`\`\n${result.message}\n\`\`\`` : undefined,
+        options: [
+          { label: `Merge ${result.target} into your branch again, resolve the conflicts, run the checks and commit.` },
+        ],
+      };
+      updateTask(taskId, { checkpoint: JSON.stringify(checkpoint) });
+    })
+    .catch((err) => {
+      updateTask(taskId, { merge_state: null, status: 'failed', error: `Merge failed: ${String(err?.message ?? err)}` });
+    });
 }
 
 export async function mergeable(taskId: number) {
@@ -397,6 +533,13 @@ export async function mergeable(taskId: number) {
   if (!task) throw new Error('Task not found');
   if (!task.branch || !task.worktree || !existsSync(task.worktree)) return false;
   return hasWorkToMerge(getProject(task.project_id)!.path, task.worktree, task.branch);
+}
+
+export async function diff(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (!task.branch || !task.worktree) throw new Error('This task has no worktree to diff');
+  return taskDiff(getProject(task.project_id)!.path, task.worktree);
 }
 
 export async function discard(taskId: number) {

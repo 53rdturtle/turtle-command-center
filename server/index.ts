@@ -7,9 +7,10 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { PORT } from './config.ts';
 import { db, getMaxConcurrent, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
+import { localOnly } from './guard.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
-  answerPermission, approveSplit, createTask, discard, markDone, recoverOnStartup,
+  accountsDto, addAccount, answerPermission, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
   merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, toDto,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
@@ -17,6 +18,7 @@ import { currentBranch, getRemote, slugify } from './worktree.ts';
 const app = new Hono();
 
 app.onError((err, c) => c.json({ error: err.message }, 400));
+app.use('/api/*', localOnly);
 
 const projectDto = async (p: ProjectRow) => ({
   currentBranch: await currentBranch(p.path),
@@ -54,6 +56,22 @@ app.patch('/api/projects/:slug', async (c) => {
   return c.json(await projectDto(getProjectBySlug(project.slug)!));
 });
 
+// ---------- accounts ----------
+// Tokens never leave the server; the UI only sees names and limit state.
+
+app.get('/api/accounts', (c) => c.json(accountsDto()));
+
+app.post('/api/accounts', async (c) => {
+  const { name, token } = await c.req.json();
+  if (!name?.trim()) throw new Error('Name is required');
+  if (!token?.trim() || /\s/.test(token.trim())) throw new Error('Paste the token printed by `claude setup-token`');
+  addAccount(name.trim(), token.trim());
+  return c.json(accountsDto());
+});
+
+app.delete('/api/accounts/:id', (c) => (removeAccount(Number(c.req.param('id'))), c.json(accountsDto())));
+app.post('/api/accounts/:id/clear-limit', (c) => (clearAccountLimit(Number(c.req.param('id'))), c.json(accountsDto())));
+
 app.post('/api/pick-folder', async (c) => c.json({ path: await pickFolder() }));
 
 // ---------- tasks ----------
@@ -75,6 +93,7 @@ app.post('/api/projects/:slug/tasks', async (c) => {
 const taskId = (c: { req: { param: (k: string) => string } }) => Number(c.req.param('id'));
 
 app.get('/api/tasks/:id/events', (c) => c.json(listEvents(taskId(c))));
+app.get('/api/tasks/:id/diff', async (c) => c.json(await diff(taskId(c))));
 
 app.post('/api/tasks/:id/reply', async (c) => {
   const { text } = await c.req.json();
