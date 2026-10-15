@@ -105,6 +105,9 @@ for (const [name, type] of [
   if (!accountColumns.has(name)) db.exec(`ALTER TABLE accounts ADD COLUMN ${name} ${type}`);
 }
 
+const projectColumns = new Set((db.prepare('PRAGMA table_info(projects)').all() as { name: string }[]).map((c) => c.name));
+if (!projectColumns.has('try_command')) db.exec('ALTER TABLE projects ADD COLUMN try_command TEXT'); // "Try it" button; NULL opens a plain shell
+
 export type TaskStatus =
   | 'queued' | 'running' | 'needs_input' | 'split_proposed' | 'split'
   | 'limited' | 'failed' | 'done' | 'discarded';
@@ -123,6 +126,7 @@ export interface SplitProposal {
 export interface ProjectRow {
   id: number; slug: string; name: string; path: string; remote: string | null;
   default_model: string; permission_mode: string; always_allow: string; created_at: number;
+  try_command: string | null;
 }
 export interface TaskRow {
   id: number; project_id: number; parent_id: number | null; title: string; description: string;

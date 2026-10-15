@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { LIMIT_RETRY_MS } from './config.ts';
+import { existsSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { join } from 'node:path';
+import { DATA_DIR, LIMIT_RETRY_MS } from './config.ts';
 import {
   addEvent, db, DB_PATH, getAccount, getMaxConcurrent, getPermission, getProject, getTask, lastEvent, listAccounts,
   listEvents, pendingPermissions, saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
   type AccountRow, type Checkpoint, type EventRow, type MergeFailure, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AccountUsage, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
-import { openResumeTerminal } from './openTerminal.ts';
+import { openResumeTerminal, openShellTerminal } from './openTerminal.ts';
 import {
   createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff,
   wasMerged,
@@ -709,6 +711,46 @@ export async function openInTerminal(taskId: number) {
   addEvent(taskId, 'user', 'Opened the session in a terminal.');
 }
 
+/** A port nothing is listening on right now. */
+function freePort() {
+  return new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address() as { port: number };
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+const tryDataDir = (taskId: number) => join(DATA_DIR, 'try', String(taskId));
+
+/** Best effort: a sandbox that is still running keeps its database open. */
+function removeTryData(taskId: number) {
+  try {
+    rmSync(tryDataDir(taskId), { recursive: true, force: true });
+  } catch {}
+}
+
+/**
+ * Opens a terminal in the task's worktree running the project's try command (a plain shell without one).
+ * It gets free ports and its own data dir as TCC_* variables, so when the project is this app the copy
+ * under test runs beside the board without sharing its database, scheduler or ports.
+ */
+export async function tryIt(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (!task.worktree || !existsSync(task.worktree)) throw new Error('This task has no worktree to try');
+  const project = getProject(task.project_id)!;
+  const env = {
+    TCC_PORT: String(await freePort()),
+    TCC_DEV_PORT: String(await freePort()),
+    TCC_DATA_DIR: tryDataDir(taskId),
+  };
+  await openShellTerminal(task.worktree, `Try #${taskId} ${task.title}`, project.try_command?.trim() || null, env);
+  return env;
+}
+
 export function retry(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
@@ -722,13 +764,14 @@ export function retry(taskId: number) {
 const isFinished = (t: TaskRow) => t.status === 'done' || t.status === 'discarded';
 
 /**
- * Sets a final status. When that finishes the last open subtask of a parent, the parent is queued
+ * Sets a final status and drops the task's "Try it" sandbox. When that finishes the last open subtask of a parent, the parent is queued
  * again to integrate the pieces. The check runs synchronously around the write, so concurrent calls
  * wake the parent exactly once per batch.
  */
 function finishTask(taskId: number, fields: Partial<TaskRow>) {
   const wasOpen = !isFinished(getTask(taskId)!);
   updateTask(taskId, fields);
+  removeTryData(taskId);
   const task = getTask(taskId)!;
   if (!task.parent_id) return;
   updateTask(task.parent_id, {}); // refresh the parent's subtask progress
