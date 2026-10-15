@@ -130,6 +130,6 @@ if (existsSync(dist)) {
 
 serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, () => {
   console.log(`🐢 Turtle Command Center API on http://localhost:${PORT}`);
-  recoverOnStartup();
+  recoverOnStartup().catch((err) => console.error('[tasks] startup recovery failed:', err));
 });
 

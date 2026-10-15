@@ -97,6 +97,23 @@ export async function mergeTaskBranch(repo: string, worktree: string, branch: st
   return { ok: true, target };
 }
 
+/** Whether a "Merge task #N" commit made by mergeTaskBranch is in the checkout's history. */
+export async function wasMerged(repo: string, taskId: number) {
+  return (await git(repo, 'log', '-1', '--format=%H', `--grep=^Merge task #${taskId}:`, 'HEAD').catch(() => '')) !== '';
+}
+
+/** Re-creates a task's worktree at its old path from its branch. False if the branch is gone. */
+export async function restoreWorktree(repo: string, path: string, branch: string) {
+  try {
+    await git(repo, 'rev-parse', '--verify', `refs/heads/${branch}`);
+  } catch {
+    return false;
+  }
+  await git(repo, 'worktree', 'prune');
+  await git(repo, 'worktree', 'add', path, branch);
+  return true;
+}
+
 export async function discardWorktree(repo: string, path: string, branch: string) {
   await git(repo, 'worktree', 'remove', '--force', path).catch(() => {});
   await git(repo, 'branch', '-D', branch).catch(() => {});
