@@ -321,3 +321,7 @@ button.chip-button:hover { color: var(--text); }
 
 .board-update { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
 .board-update .warn-text { color: var(--warn); font-size: 12px; }
+.usage-pills { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.usage-pill { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px solid var(--border); border-radius: 99px; }
+.usage-pill-active { border-color: var(--accent); }
+.usage-limited { color: var(--danger); }

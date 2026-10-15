@@ -163,7 +163,7 @@ export const api = {
 export type StreamMessage =
   | { type: 'task'; task: Task }
   | { type: 'event'; event: TaskEvent }
-  | { type: 'status'; running: number; maxConcurrent: number; usage: (AccountUsage & { account: string }) | null };
+  | { type: 'status'; running: number; maxConcurrent: number; accounts: Account[] };
 
 type Handler = (m: StreamMessage) => void;
 const handlers = new Set<Handler>();

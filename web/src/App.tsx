@@ -54,7 +54,7 @@ export function App() {
         <button className="ghost" onClick={() => setShowAccounts((s) => !s)}>Accounts</button>
         <span className="spacer" />
         <BoardUpdate />
-        <UsagePill />
+        <UsagePills />
         <AgentSlots />
         <NotifyToggle />
       </header>
@@ -426,22 +426,41 @@ function Usage({ usage }: { usage: AccountUsage | null }) {
   );
 }
 
-/** The account new runs start on, and how much of its usage is left. */
-function UsagePill() {
-  const [usage, setUsage] = useState<(AccountUsage & { account: string }) | null>(null);
-  useEffect(() => onStream((m) => m.type === 'status' && setUsage(m.usage ?? null)), []);
-  if (!usage?.fiveHour && !usage?.sevenDay) return null;
+/** One pill per account: how much of its usage is left, and which one new runs start on. */
+function UsagePills() {
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  useEffect(() => onStream((m) => m.type === 'status' && setAccounts(m.accounts ?? [])), []);
+  if (!accounts.some((a) => a.usage || a.limitedUntil)) return null;
+  const several = accounts.length > 1;
+  return (
+    <span className="usage-pills">
+      {accounts.map((a) => <AccountPill key={a.id} account={a} marked={several && a.active} />)}
+    </span>
+  );
+}
+
+function AccountPill({ account: a, marked }: { account: Account; marked: boolean }) {
+  const usage = a.usage;
   const title = [
-    usage.account,
-    usage.fiveHour && `5-hour: ${percent(usage.fiveHour)} used, ${resetLabel(usage.fiveHour)}`,
-    usage.sevenDay && `7-day: ${percent(usage.sevenDay)} used, ${resetLabel(usage.sevenDay)}`,
-    `as of ${ago(usage.reportedAt)}`,
+    `${a.name}${marked ? ' (in use)' : ''}`,
+    a.limitedUntil && `Hit its usage limit; back at ${clock(a.limitedUntil)}`,
+    usage?.fiveHour && `5-hour: ${percent(usage.fiveHour)} used, ${resetLabel(usage.fiveHour)}`,
+    usage?.sevenDay && `7-day: ${percent(usage.sevenDay)} used, ${resetLabel(usage.sevenDay)}`,
+    usage ? `as of ${ago(usage.reportedAt)}` : 'No usage reported yet; it shows after a run on this account',
   ].filter(Boolean).join('\n');
   return (
-    <span className="slots" title={title}>
-      <span className="usage-account">{usage.account}</span>
-      {usage.fiveHour && <UsageBar label="5h" window={usage.fiveHour} />}
-      {usage.sevenDay && <UsageBar label="7d" window={usage.sevenDay} />}
+    <span className={`slots usage-pill${marked ? ' usage-pill-active' : ''}`} title={title}>
+      <span className="usage-account">{a.name}</span>
+      {a.limitedUntil ? (
+        <span className="usage usage-limited">limited · back {clock(a.limitedUntil)}</span>
+      ) : usage?.fiveHour || usage?.sevenDay ? (
+        <>
+          {usage.fiveHour && <UsageBar label="5h" window={usage.fiveHour} />}
+          {usage.sevenDay && <UsageBar label="7d" window={usage.sevenDay} />}
+        </>
+      ) : (
+        <span className="usage">no data yet</span>
+      )}
     </span>
   );
 }
