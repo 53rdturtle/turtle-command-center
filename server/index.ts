@@ -10,6 +10,7 @@ import { db, getMaxConcurrent, getProjectBySlug, listEvents, listProjects, listT
 import { localOnly } from './guard.ts';
 import { boardVersion, startUpdate } from './selfUpdate.ts';
 import { pickFolder } from './pickFolder.ts';
+import { readImage, saveImage } from './images.ts';
 import {
   accountsDto, addAccount, answerPermission, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
   cancelMerge, dismissMergeFailure, merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, toDto,
@@ -74,6 +75,16 @@ app.delete('/api/accounts/:id', (c) => (removeAccount(Number(c.req.param('id')))
 app.post('/api/accounts/:id/clear-limit', (c) => (clearAccountLimit(Number(c.req.param('id'))), c.json(accountsDto())));
 
 app.post('/api/pick-folder', async (c) => c.json({ path: await pickFolder() }));
+
+// ---------- pasted images ----------
+
+app.post('/api/images', async (c) => c.json(saveImage((await c.req.json()).dataUrl)));
+
+app.get('/api/images/:name', (c) => {
+  const image = readImage(c.req.param('name'));
+  if (!image) return c.json({ error: 'Image not found' }, 404);
+  return c.body(image.bytes, 200, { 'content-type': image.type, 'cache-control': 'private, max-age=31536000, immutable' });
+});
 
 // ---------- tasks ----------
 

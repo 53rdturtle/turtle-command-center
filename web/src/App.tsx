@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type Task } from './api.ts';
 import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
+import { ImageThumbs, useImageInput } from './images.tsx';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
 
@@ -174,9 +175,10 @@ function NewTask({ project }: { project: Project }) {
   const [expanded, setExpanded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const images = useImageInput(setDescription);
 
   const submit = async () => {
-    if (!title.trim()) return;
+    if (!title.trim() || images.uploading) return;
     setBusy(true);
     setError(null);
     try {
@@ -204,7 +206,7 @@ function NewTask({ project }: { project: Project }) {
         <select value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model">
           {MODELS.map((m) => <option key={m}>{m}</option>)}
         </select>
-        <button type="submit" disabled={busy || !title.trim()}>Start</button>
+        <button type="submit" disabled={busy || images.uploading || !title.trim()}>Start</button>
       </div>
       {expanded && (
         <textarea
@@ -212,9 +214,11 @@ function NewTask({ project }: { project: Project }) {
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           onKeyDown={enterToSubmit(submit)}
-          placeholder="Details, context, links… (optional, Enter to start, Ctrl+Enter for new line)"
+          {...images.handlers}
+          placeholder="Details, context, links, pasted screenshots… (optional, Enter to start, Ctrl+Enter for new line)"
         />
       )}
+      {expanded && <ImageThumbs text={description} uploading={images.uploading} error={images.error} />}
       {error && <p className="error">{error}</p>}
     </form>
   );
