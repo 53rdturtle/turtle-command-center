@@ -10,7 +10,7 @@ import { db, getProjectBySlug, listEvents, listProjects, listTasks, type Project
 import { pickFolder } from './pickFolder.ts';
 import {
   answerPermission, approveSplit, createTask, discard, markDone, recoverOnStartup,
-  merge, openInTerminal, reply, retry, runningCount, stop, subscribe, toDto,
+  merge, mergeable, openInTerminal, reply, retry, runningCount, stop, subscribe, toDto,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
 
@@ -94,6 +94,7 @@ app.post('/api/tasks/:id/retry', (c) => (retry(taskId(c)), c.json({ ok: true }))
 app.post('/api/tasks/:id/done', async (c) => (await markDone(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/discard', async (c) => (await discard(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/open-terminal', async (c) => (await openInTerminal(taskId(c)), c.json({ ok: true })));
+app.get('/api/tasks/:id/mergeable', async (c) => c.json({ mergeable: await mergeable(taskId(c)) }));
 app.post('/api/tasks/:id/merge', async (c) => c.json(await merge(taskId(c))));
 
 app.post('/api/permissions/:id', async (c) => {

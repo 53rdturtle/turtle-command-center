@@ -80,6 +80,7 @@ export const api = {
   done: (id: number) => call('POST', `/api/tasks/${id}/done`),
   discard: (id: number) => call('POST', `/api/tasks/${id}/discard`),
   openTerminal: (id: number) => call('POST', `/api/tasks/${id}/open-terminal`),
+  mergeable: (id: number) => call<{ mergeable: boolean }>('GET', `/api/tasks/${id}/mergeable`).then((r) => r.mergeable),
   merge: (id: number) => call<MergeResult>('POST', `/api/tasks/${id}/merge`),
   permission: (id: string, decision: 'allow' | 'always' | 'deny') => call('POST', `/api/permissions/${id}`, { decision }),
 };

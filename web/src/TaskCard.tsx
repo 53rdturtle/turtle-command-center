@@ -31,6 +31,25 @@ function useAction() {
   return { busy, error, run };
 }
 
+/** True when the task branch has work the checkout lacks; rechecked on task updates, branch switches and window focus. */
+function useMergeable(task: Task, targetBranch: string | null) {
+  const eligible = Boolean(task.branch && task.worktree) && !['running', 'queued', 'done'].includes(task.status);
+  const [mergeable, setMergeable] = useState(false);
+  useEffect(() => {
+    if (!eligible) return setMergeable(false);
+    let alive = true;
+    // If the check itself fails, show the button and let a merge attempt report the problem.
+    const check = () => api.mergeable(task.id).catch(() => true).then((m) => alive && setMergeable(m));
+    check();
+    addEventListener('focus', check);
+    return () => {
+      alive = false;
+      removeEventListener('focus', check);
+    };
+  }, [eligible, task.id, task.updatedAt, targetBranch]);
+  return eligible && mergeable;
+}
+
 export function TaskCard({ task, parent, children, targetBranch }: { task: Task; parent?: Task; children: Task[]; targetBranch: string | null }) {
   const [showTranscript, setShowTranscript] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -42,7 +61,7 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
   // Finished cards keep only the closing actions in view; the rest sit behind "⋯".
   const finished = agentDone(task) || task.status === 'done';
   const secondary = !finished || showMore;
-  const canMerge = Boolean(task.branch && task.worktree) && !['running', 'queued', 'done'].includes(task.status);
+  const canMerge = useMergeable(task, targetBranch);
   const merge = () => run(async () => {
     setMergeFailure(null);
     const result = await api.merge(task.id);

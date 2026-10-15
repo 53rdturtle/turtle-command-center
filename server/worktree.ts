@@ -63,6 +63,12 @@ export async function currentBranch(repo: string) {
   }
 }
 
+/** Whether merging would bring anything in: commits the checkout lacks, or uncommitted edits (merge commits those first). */
+export async function hasWorkToMerge(repo: string, worktree: string, branch: string) {
+  if ((await git(worktree, 'status', '--porcelain')) !== '') return true;
+  return Number(await git(repo, 'rev-list', '--count', `HEAD..${branch}`)) > 0;
+}
+
 export type MergeResult =
   | { ok: true; target: string }
   | { ok: false; target: string; conflicts: string[]; message: string };
