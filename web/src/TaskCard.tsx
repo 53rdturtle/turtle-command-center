@@ -283,7 +283,7 @@ function PermissionRequest({ p }: { p: Permission }) {
 
 function Transcript({ taskId }: { taskId: number }) {
   const [events, setEvents] = useState<TaskEvent[]>([]);
-  const end = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let alive = true;
     api.events(taskId).then((e) => alive && setEvents(e));
@@ -295,13 +295,14 @@ function Transcript({ taskId }: { taskId: number }) {
       off();
     };
   }, [taskId]);
-  // Braces matter: newer browsers return a Promise from scrollIntoView, which React would treat as a cleanup function.
+  // Scroll only the transcript box to its end; scrollIntoView would also scroll the page.
   useEffect(() => {
-    end.current?.scrollIntoView({ block: 'nearest' });
+    const el = box.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [events.length]);
 
   return (
-    <div className="transcript">
+    <div className="transcript" ref={box}>
       {events.length === 0 && <p className="muted">No activity yet.</p>}
       {events.map((e) => (
         <div key={e.id} className={`ev ev-${e.kind}`}>
@@ -309,7 +310,6 @@ function Transcript({ taskId }: { taskId: number }) {
           {e.kind === 'tool' ? <code>{e.text}</code> : <div className="md"><Markdown>{e.text}</Markdown></div>}
         </div>
       ))}
-      <div ref={end} />
     </div>
   );
 }

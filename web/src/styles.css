@@ -245,3 +245,6 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 
 .path-row { display: flex; gap: 8px; }
 .path-row button { white-space: nowrap; }
+
+.crash { max-width: 900px; margin: 40px auto; padding: 0 16px; }
+.crash pre { white-space: pre-wrap; font-size: 12px; background: var(--surface); border: 1px solid var(--border); padding: 12px; border-radius: 8px; }
