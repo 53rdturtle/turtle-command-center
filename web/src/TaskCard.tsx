@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { agentDone, api, onStream, type Checkpoint, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
+import { api, onStream, type Checkpoint, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -58,8 +58,8 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
   const [mergeFailure, setMergeFailure] = useState<Extract<MergeResult, { ok: false }> | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : task.status;
-  // Finished cards keep only the closing actions in view; the rest sit behind "⋯".
-  const finished = agentDone(task) || task.status === 'done';
+  // Done cards keep only the closing actions in view; the rest sit behind "⋯".
+  const finished = task.status === 'done';
   const secondary = !finished || showMore;
   const canMerge = useMergeable(task, targetBranch);
   const merge = () => run(async () => {
