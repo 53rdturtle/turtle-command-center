@@ -105,6 +105,8 @@ export interface DiffFile {
 
 export interface TaskDiff { target: string; base: string; files: DiffFile[]; additions: number; deletions: number; truncated: boolean }
 
+export interface TaskTemplate { id: number; title: string; description: string }
+
 export interface TaskEvent { id: number; task_id: number; ts: number; kind: string; text: string }
 
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -147,6 +149,10 @@ export const api = {
   tasks: (slug: string) => call<Task[]>('GET', `/api/projects/${slug}/tasks`),
   createTask: (slug: string, t: { title: string; description: string; model: string }) =>
     call<Task>('POST', `/api/projects/${slug}/tasks`, t),
+  templates: (slug: string) => call<TaskTemplate[]>('GET', `/api/projects/${slug}/templates`),
+  saveTemplate: (slug: string, t: { title: string; description: string }) =>
+    call<TaskTemplate[]>('POST', `/api/projects/${slug}/templates`, t),
+  deleteTemplate: (slug: string, id: number) => call<TaskTemplate[]>('DELETE', `/api/projects/${slug}/templates/${id}`),
   events: (id: number) => call<TaskEvent[]>('GET', `/api/tasks/${id}/events`),
   diff: (id: number) => call<TaskDiff>('GET', `/api/tasks/${id}/diff`),
   reply: (id: number, text: string) => call('POST', `/api/tasks/${id}/reply`, { text }),
