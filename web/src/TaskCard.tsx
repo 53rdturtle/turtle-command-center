@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { agentDone, api, onStream, type Checkpoint, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
+import { api, onStream, type Checkpoint, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -58,8 +58,8 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
   const [mergeFailure, setMergeFailure] = useState<Extract<MergeResult, { ok: false }> | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : task.status;
-  // Finished cards keep only the closing actions in view; the rest sit behind "⋯".
-  const finished = agentDone(task) || task.status === 'done';
+  // Done cards keep only the closing actions in view; the rest sit behind "⋯".
+  const finished = task.status === 'done';
   const secondary = !finished || showMore;
   const canMerge = useMergeable(task, targetBranch);
   const merge = () => run(async () => {
@@ -207,14 +207,11 @@ function Summary({ checkpoint }: { checkpoint: Checkpoint }) {
 function QuickReply({ task }: { task: Task }) {
   const cp = task.checkpoint!;
   const { busy, error, run } = useAction();
-  const [followUp, setFollowUp] = useState(false);
-  const showReply = !cp.done || followUp;
   return (
     <div>
       {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
       <Summary checkpoint={cp} />
-      {cp.done && <button className="link" onClick={() => setFollowUp((f) => !f)}>{followUp ? 'Hide follow-up' : 'Follow up…'}</button>}
-      {showReply && cp.options.length > 0 && (
+      {cp.options.length > 0 && (
         <div className="options">
           {cp.options.map((o, i) => (
             <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={() => run(() => api.reply(task.id, o.label))}>
@@ -225,7 +222,7 @@ function QuickReply({ task }: { task: Task }) {
         </div>
       )}
       {error && <p className="error">{error}</p>}
-      {showReply && <ReplyBox taskId={task.id} />}
+      <ReplyBox taskId={task.id} />
     </div>
   );
 }
