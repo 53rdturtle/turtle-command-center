@@ -281,7 +281,6 @@ function MergeFailure({ taskId, failure, onDismiss }: { taskId: number; failure:
 function PermissionRequest({ p }: { p: Permission }) {
   const { busy, error, run } = useAction();
   const command = typeof p.input.command === 'string' ? p.input.command : null;
-  const alwaysKey = p.toolName === 'Bash' && command ? `Bash: ${command.trim().split(/\s+/)[0]}` : p.toolName;
   const description = typeof p.input.description === 'string' ? p.input.description : null;
   return (
     <div className="permission">
@@ -289,7 +288,9 @@ function PermissionRequest({ p }: { p: Permission }) {
       <pre>{command ?? JSON.stringify(p.input, null, 2)}</pre>
       <div className="options">
         <button className="option primary" disabled={busy} onClick={() => run(() => api.permission(p.id, 'allow'))}>Allow</button>
-        <button className="option" disabled={busy} onClick={() => run(() => api.permission(p.id, 'always'))}>Always allow <code>{alwaysKey}</code></button>
+        {p.alwaysKey && (
+          <button className="option" disabled={busy} onClick={() => run(() => api.permission(p.id, 'always'))}>Always allow <code>{p.alwaysKey}</code></button>
+        )}
         <button className="option" disabled={busy} onClick={() => run(() => api.permission(p.id, 'deny'))}>Deny</button>
       </div>
       {error && <p className="error">{error}</p>}

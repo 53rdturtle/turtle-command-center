@@ -104,10 +104,30 @@ const READ_ONLY_TOOLS = new Set([
   'Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'TodoWrite', 'WebSearch', 'WebFetch', 'Task', 'Agent',
 ]);
 
-/** Same rule as allowKey in server/tasks.ts: Bash rules are scoped to the command's first word. */
+const MULTI_COMMAND_TOOLS = new Set([
+  'git', 'npm', 'npx', 'pnpm', 'yarn', 'node', 'python', 'python3', 'py', 'cargo', 'go', 'docker', 'gh',
+]);
+// Tools that run another command: a rule only ever covers the exact command line.
+const WRAPPER_TOOLS = new Set(['bash', 'sh', 'env', 'sudo', 'xargs', 'eval', 'exec', 'pwsh', 'powershell', 'cmd']);
+
+/**
+ * The "Always allow" rule a tool call would create, or null when none should be offered.
+ * Keep identical to allowKey in server/tasks.ts.
+ * Bash rules are scoped to the command's first word, or first two for multi-command tools
+ * (so allowing `git status` doesn't allow `git push`). Commands with shell control or
+ * substitution never get a rule: `cd x && rm -rf ~` must not ride on a `cd` rule.
+ */
 function allowKey(toolName, input) {
-  if (toolName === 'Bash' && typeof input.command === 'string') return `Bash:${input.command.trim().split(/\s+/)[0]}`;
-  return toolName;
+  if (toolName !== 'Bash' || typeof input.command !== 'string') return toolName;
+  const command = input.command.trim();
+  if (!command || /[&|;<>`\n\r]|\$\(/.test(command)) return null;
+  const words = command.split(/\s+/);
+  const tool = words[0].replace(/^.*[\\/]/, '').replace(/\.exe$/i, '').toLowerCase();
+  if (words[0].includes('=') || WRAPPER_TOOLS.has(tool)) return `Bash:${words.join(' ')}`;
+  if (!MULTI_COMMAND_TOOLS.has(tool)) return `Bash:${words[0]}`;
+  // `git -C dir push` or bare `git`: no safe subcommand to scope on, so match exactly.
+  if (words.length < 2 || words[1].startsWith('-')) return `Bash:${words.join(' ')}`;
+  return `Bash:${words[0]} ${words[1]}`;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -116,7 +136,7 @@ async function requestPermission(toolName, input) {
   const allow = { behavior: 'allow', updatedInput: input };
   const project = db.prepare('SELECT p.always_allow FROM projects p JOIN tasks t ON t.project_id = p.id WHERE t.id = ?').get(taskId);
   const alwaysAllow = project ? JSON.parse(project.always_allow) : [];
-  if (READ_ONLY_TOOLS.has(toolName) || toolName.startsWith('mcp__tcc__') || alwaysAllow.includes(allowKey(toolName, input))) {
+  if (READ_ONLY_TOOLS.has(toolName) || toolName.startsWith('mcp__tcc__') || alwaysAllow.includes(allowKey(toolName, input) ?? '')) {
     return allow;
   }
 

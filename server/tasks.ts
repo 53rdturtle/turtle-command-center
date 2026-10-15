@@ -47,12 +47,30 @@ setInterval(() => {
 // ---------- permissions ----------
 // The agent's MCP process inserts requests and polls for the answer; we only record decisions.
 
-/** Same rule as allowKey in mcp-stdio.mjs: Bash rules are scoped to the command's first word. */
-function allowKey(toolName: string, input: Record<string, unknown>) {
-  if (toolName === 'Bash' && typeof input.command === 'string') {
-    return `Bash:${input.command.trim().split(/\s+/)[0]}`;
-  }
-  return toolName;
+const MULTI_COMMAND_TOOLS = new Set([
+  'git', 'npm', 'npx', 'pnpm', 'yarn', 'node', 'python', 'python3', 'py', 'cargo', 'go', 'docker', 'gh',
+]);
+// Tools that run another command: a rule only ever covers the exact command line.
+const WRAPPER_TOOLS = new Set(['bash', 'sh', 'env', 'sudo', 'xargs', 'eval', 'exec', 'pwsh', 'powershell', 'cmd']);
+
+/**
+ * The "Always allow" rule a tool call would create, or null when none should be offered.
+ * Keep identical to allowKey in server/mcp-stdio.mjs.
+ * Bash rules are scoped to the command's first word, or first two for multi-command tools
+ * (so allowing `git status` doesn't allow `git push`). Commands with shell control or
+ * substitution never get a rule: `cd x && rm -rf ~` must not ride on a `cd` rule.
+ */
+export function allowKey(toolName: string, input: Record<string, unknown>): string | null {
+  if (toolName !== 'Bash' || typeof input.command !== 'string') return toolName;
+  const command = input.command.trim();
+  if (!command || /[&|;<>`\n\r]|\$\(/.test(command)) return null;
+  const words = command.split(/\s+/);
+  const tool = words[0].replace(/^.*[\\/]/, '').replace(/\.exe$/i, '').toLowerCase();
+  if (words[0].includes('=') || WRAPPER_TOOLS.has(tool)) return `Bash:${words.join(' ')}`;
+  if (!MULTI_COMMAND_TOOLS.has(tool)) return `Bash:${words[0]}`;
+  // `git -C dir push` or bare `git`: no safe subcommand to scope on, so match exactly.
+  if (words.length < 2 || words[1].startsWith('-')) return `Bash:${words.join(' ')}`;
+  return `Bash:${words[0]} ${words[1]}`;
 }
 
 export function answerPermission(id: string, decision: 'allow' | 'always' | 'deny', message?: string) {
@@ -61,8 +79,10 @@ export function answerPermission(id: string, decision: 'allow' | 'always' | 'den
   if (decision === 'always') {
     const task = getTask(req.task_id)!;
     const project = getProject(task.project_id)!;
+    const key = allowKey(req.tool_name, JSON.parse(req.input));
     const rules = new Set<string>(JSON.parse(project.always_allow));
-    rules.add(allowKey(req.tool_name, JSON.parse(req.input)));
+    // No safe rule for this call (e.g. a chained Bash command): treat as a one-off allow.
+    if (key) rules.add(key);
     db.prepare('UPDATE projects SET always_allow = ? WHERE id = ?').run(JSON.stringify([...rules]), project.id);
   }
   db.prepare(`UPDATE permissions SET status = ?, message = ? WHERE id = ? AND status = 'pending'`)
@@ -97,7 +117,10 @@ export function toDto(t: TaskRow) {
     retryAt: t.retry_at,
     costUsd: t.cost_usd,
     lastActivity: t.status === 'running' ? (lastEvent(t.id)?.text ?? null) : null,
-    permissions: pendingPermissions(t.id).map((p) => ({ id: p.id, toolName: p.tool_name, input: JSON.parse(p.input) })),
+    permissions: pendingPermissions(t.id).map((p) => {
+      const input = JSON.parse(p.input);
+      return { id: p.id, toolName: p.tool_name, input, alwaysKey: allowKey(p.tool_name, input) };
+    }),
     createdAt: t.created_at,
     updatedAt: t.updated_at,
   };
