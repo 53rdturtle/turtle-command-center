@@ -81,7 +81,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 
-.app { max-width: 1400px; margin: 0 auto; padding: 0 16px 64px; }
+.app { margin: 0 auto; padding: 0 24px 64px; }
 
 .topbar {
   display: flex;
@@ -152,7 +152,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 }
 .section-toggle { background: none; border: none; padding: 0; color: var(--muted); }
 .count { background: var(--surface-2); border-radius: 99px; padding: 1px 8px; margin-left: 4px; font-size: 12px; }
-.cards { display: grid; gap: 12px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr)); gap: 12px; align-items: start; }
 .muted { color: var(--muted); margin: 0; }
 
 .card { padding: 14px 16px; border-left: 4px solid var(--border); }
