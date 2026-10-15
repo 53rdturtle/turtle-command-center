@@ -15,7 +15,22 @@ npm run build   # build the UI once
 npm start       # http://localhost:7777
 ```
 
-For UI development: `npm run dev` and open http://localhost:5173.
+### Developing the board with itself
+
+Run the board you use from a **stable copy**, not from this checkout: merging a task into this checkout changes
+the server's files, and a `--watch` server would restart in the middle of the merge.
+
+```sh
+npm run stable   # creates/updates ../TurtleCommandCenter-stable at this checkout's HEAD and builds it
+cd ../TurtleCommandCenter-stable && npm start   # http://localhost:7777, your real data in ~/.turtle-cc
+```
+
+After that, the board shows **Update board (N new)** in its header whenever tasks have been merged into this
+checkout. Clicking it lets a running merge finish (queued merges wait), moves the stable copy to this checkout's
+HEAD, installs and builds, restarts, and reloads the page. If the install or build fails, it rolls back and says so.
+
+For UI development, `npm run dev` here and open http://localhost:5173. Dev mode uses its own API port (7778) and data
+(`~/.turtle-cc-dev`), so it never shares a database with the stable board.
 
 Requires the `claude` CLI, logged in (`claude login`). Sessions run on your Claude subscription;
 `ANTHROPIC_API_KEY` is stripped from the agent environment so it is never billed to an API key by accident.
@@ -25,7 +40,7 @@ Requires the `claude` CLI, logged in (`claude login`). Sessions run on your Clau
 | Variable | Default | |
 |---|---|---|
 | `TCC_PORT` | `7777` | |
-| `TCC_MAX_CONCURRENT` | `2` | Agents running at once across all projects; extra tasks queue |
+| `TCC_MAX_CONCURRENT` | `5` | Default for agents running at once across all projects; extra tasks queue. Change it live by editing the number in the board header (saved in the DB, overrides this) |
 | `TCC_DATA_DIR` | `~/.turtle-cc` | SQLite DB + task worktrees |
 | `TCC_CLAUDE_BIN` | `claude` | |
 
@@ -46,7 +61,10 @@ only share the SQLite database and log files.
 - `server/tasks.ts` has the scheduler and task lifecycle, and streams changes to the UI (SSE at `/api/stream`)
   by polling the database's `rev` counter.
 - **Merge into &lt;branch&gt;** merges the task branch (`--no-ff`) into whatever your main checkout has checked out, then removes
-  the worktree and branch. It only appears when the task has commits or uncommitted edits your checkout doesn't have yet. On conflicts the merge is aborted (your checkout is untouched) and you can ask the agent to resolve them.
+  the worktree and branch. It only appears when the task has commits or uncommitted edits your checkout doesn't have yet.
+  It refuses up front if that checkout has uncommitted changes to tracked files (it lists them so you can commit or stash),
+  a detached HEAD, or a merge, rebase or cherry-pick in progress. On conflicts the merge is aborted (your checkout is
+  untouched) and you can ask the agent to resolve them; other git errors are shown as-is.
 - **Mark done** commits leftover changes and removes the worktree but keeps the `tcc/...` branch.
   **Discard** deletes the worktree and the branch.
 - **Accounts** (header button): agents run on the first account with usage left. When it hits its usage limit, its tasks
