@@ -1,0 +1,269 @@
+import { useEffect, useRef, useState } from 'react';
+import Markdown from 'react-markdown';
+import { api, onStream, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
+
+const STATUS_LABEL: Record<Task['status'], string> = {
+  queued: 'Queued',
+  running: 'Working',
+  needs_input: 'Needs you',
+  split_proposed: 'Split proposed',
+  split: 'Split',
+  limited: 'Usage limit',
+  failed: 'Failed',
+  done: 'Done',
+};
+
+function useAction() {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, error, run };
+}
+
+export function TaskCard({ task, parent, children }: { task: Task; parent?: Task; children: Task[] }) {
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const { busy, error, run } = useAction();
+  const status = task.permissions.length ? 'permission' : task.status;
+
+  const resumeCmd = task.sessionId && task.worktree ? `cd "${task.worktree}" && claude --resume ${task.sessionId}` : null;
+  const copyResume = async () => {
+    if (!resumeCmd) return;
+    await navigator.clipboard.writeText(resumeCmd);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <article className={`card status-${status}`}>
+      <header className="card-head">
+        <div className="card-title">
+          <span className="task-id">#{task.id}</span>
+          <h3>{task.title}</h3>
+        </div>
+        <span className={`pill pill-${status}`}>
+          {status === 'running' && <span className="spinner" />}
+          {task.permissions.length ? 'Permission' : STATUS_LABEL[task.status]}
+        </span>
+      </header>
+
+      <div className="meta">
+        {parent && <span className="chip">↳ from #{parent.id} {parent.title}</span>}
+        <span className="chip">{task.model}</span>
+        {task.branch && <span className="chip mono">{task.branch}</span>}
+        {task.costUsd > 0 && <span className="chip" title="Equivalent API cost; on a subscription this counts against usage limits">≈${task.costUsd.toFixed(2)}</span>}
+      </div>
+
+      <div className="card-body">
+        {task.permissions.map((p) => <PermissionRequest key={p.id} p={p} />)}
+        <Body task={task} children={children} />
+      </div>
+
+      {error && <p className="error">{error}</p>}
+
+      <footer className="card-actions">
+        <button className="ghost" onClick={() => setShowTranscript((s) => !s)}>
+          {showTranscript ? 'Hide transcript' : 'Transcript'}
+        </button>
+        {resumeCmd && (
+          <button className="ghost" onClick={copyResume} title={resumeCmd}>
+            {copied ? 'Copied ✓' : 'Copy resume cmd'}
+          </button>
+        )}
+        <span className="spacer" />
+        {(task.status === 'running' || task.status === 'queued' || task.status === 'limited') && (
+          <button className="ghost" disabled={busy} onClick={() => run(() => api.stop(task.id))}>Stop</button>
+        )}
+        {(task.status === 'failed' || task.status === 'limited') && (
+          <button className="ghost" disabled={busy} onClick={() => run(() => api.retry(task.id))}>Retry now</button>
+        )}
+        {task.status !== 'done' && (
+          <button className="ghost" disabled={busy} onClick={() => run(() => api.done(task.id))}>Mark done</button>
+        )}
+        {confirmDiscard ? (
+          <>
+            <button className="danger" disabled={busy} onClick={() => run(() => api.discard(task.id))}>Discard work + branch</button>
+            <button className="ghost" onClick={() => setConfirmDiscard(false)}>Cancel</button>
+          </>
+        ) : (
+          <button className="ghost" onClick={() => setConfirmDiscard(true)}>Discard</button>
+        )}
+      </footer>
+
+      {showTranscript && <Transcript taskId={task.id} />}
+    </article>
+  );
+}
+
+function Body({ task, children }: { task: Task; children: Task[] }) {
+  switch (task.status) {
+    case 'running':
+      return <p className="activity">{task.lastActivity ?? 'Starting session…'}</p>;
+    case 'queued':
+      return <p className="muted">Waiting for a free agent slot.{task.queuedPrompt && <><br /><em>Next message: {truncate(task.queuedPrompt, 160)}</em></>}</p>;
+    case 'limited':
+      return (
+        <p className="muted">
+          Hit a usage limit. Retrying automatically at {task.retryAt ? new Date(task.retryAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'soon'}.
+        </p>
+      );
+    case 'failed':
+      return <pre className="error-box">{task.error}</pre>;
+    case 'needs_input':
+      return task.checkpoint ? <QuickReply task={task} /> : null;
+    case 'split_proposed':
+      return task.split ? <SplitReview task={task} /> : null;
+    case 'split':
+      return (
+        <div>
+          <p className="muted">Split into {children.length} subtasks:</p>
+          <ul className="subtask-status">
+            {children.map((c) => <li key={c.id}>#{c.id} {c.title} <span className={`pill pill-${c.status} small`}>{STATUS_LABEL[c.status]}</span></li>)}
+          </ul>
+          <ReplyBox taskId={task.id} placeholder="Message the parent session (e.g. 'Subtasks are done, integrate and verify')…" />
+        </div>
+      );
+    case 'done':
+      return task.checkpoint ? <div className="summary md"><Markdown>{task.checkpoint.summary}</Markdown></div> : null;
+  }
+}
+
+function QuickReply({ task }: { task: Task }) {
+  const cp = task.checkpoint!;
+  const { busy, error, run } = useAction();
+  return (
+    <div>
+      {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
+      <div className="summary md"><Markdown>{cp.summary}</Markdown></div>
+      {cp.options.length > 0 && (
+        <div className="options">
+          {cp.options.map((o, i) => (
+            <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={() => run(() => api.reply(task.id, o.label))}>
+              <span>{o.label}</span>
+              {o.detail && <small>{o.detail}</small>}
+            </button>
+          ))}
+        </div>
+      )}
+      {error && <p className="error">{error}</p>}
+      <ReplyBox taskId={task.id} />
+    </div>
+  );
+}
+
+function ReplyBox({ taskId, placeholder = 'Reply in your own words…  (Ctrl+Enter to send)' }: { taskId: number; placeholder?: string }) {
+  const [text, setText] = useState('');
+  const { busy, error, run } = useAction();
+  const send = () => text.trim() && run(async () => {
+    await api.reply(taskId, text);
+    setText('');
+  });
+  return (
+    <div className="reply">
+      <textarea
+        rows={2}
+        value={text}
+        placeholder={placeholder}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send();
+        }}
+      />
+      <button disabled={busy || !text.trim()} onClick={send}>Send</button>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+function SplitReview({ task }: { task: Task }) {
+  const [subtasks, setSubtasks] = useState<Subtask[]>(task.split!.subtasks);
+  const { busy, error, run } = useAction();
+  const update = (i: number, patch: Partial<Subtask>) =>
+    setSubtasks((list) => list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+
+  return (
+    <div>
+      <div className="summary md"><Markdown>{task.split!.rationale}</Markdown></div>
+      <ol className="subtasks">
+        {subtasks.map((s, i) => (
+          <li key={i}>
+            <input value={s.title} onChange={(e) => update(i, { title: e.target.value })} />
+            <textarea rows={3} value={s.prompt} onChange={(e) => update(i, { prompt: e.target.value })} />
+            <button className="ghost small" onClick={() => setSubtasks((l) => l.filter((_, j) => j !== i))}>Remove</button>
+          </li>
+        ))}
+      </ol>
+      <div className="options">
+        <button className="option primary" disabled={busy || subtasks.length === 0} onClick={() => run(() => api.approveSplit(task.id, subtasks))}>
+          Create {subtasks.length} subtask{subtasks.length === 1 ? '' : 's'}
+        </button>
+        <button className="option" disabled={busy} onClick={() => run(() => api.reply(task.id, "Don't split. Keep this as one task and continue."))}>
+          Keep as one task
+        </button>
+      </div>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+function PermissionRequest({ p }: { p: Permission }) {
+  const { busy, error, run } = useAction();
+  const command = typeof p.input.command === 'string' ? p.input.command : null;
+  const alwaysKey = p.toolName === 'Bash' && command ? `Bash: ${command.trim().split(/\s+/)[0]}` : p.toolName;
+  const description = typeof p.input.description === 'string' ? p.input.description : null;
+  return (
+    <div className="permission">
+      <p>Wants to use <strong>{p.toolName}</strong>{description && <> — {description}</>}</p>
+      <pre>{command ?? JSON.stringify(p.input, null, 2)}</pre>
+      <div className="options">
+        <button className="option primary" disabled={busy} onClick={() => run(() => api.permission(p.id, 'allow'))}>Allow</button>
+        <button className="option" disabled={busy} onClick={() => run(() => api.permission(p.id, 'always'))}>Always allow <code>{alwaysKey}</code></button>
+        <button className="option" disabled={busy} onClick={() => run(() => api.permission(p.id, 'deny'))}>Deny</button>
+      </div>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+function Transcript({ taskId }: { taskId: number }) {
+  const [events, setEvents] = useState<TaskEvent[]>([]);
+  const end = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let alive = true;
+    api.events(taskId).then((e) => alive && setEvents(e));
+    const off = onStream((m) => {
+      if (m.type === 'event' && m.event.task_id === taskId) setEvents((list) => [...list, m.event]);
+    });
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [taskId]);
+  useEffect(() => end.current?.scrollIntoView({ block: 'nearest' }), [events.length]);
+
+  return (
+    <div className="transcript">
+      {events.length === 0 && <p className="muted">No activity yet.</p>}
+      {events.map((e) => (
+        <div key={e.id} className={`ev ev-${e.kind}`}>
+          <span className="ev-kind">{e.kind}</span>
+          {e.kind === 'tool' ? <code>{e.text}</code> : <div className="md"><Markdown>{e.text}</Markdown></div>}
+        </div>
+      ))}
+      <div ref={end} />
+    </div>
+  );
+}
+
+const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n) + '…' : s);
