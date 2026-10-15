@@ -387,6 +387,9 @@ async function repairWorktrees() {
 
 export async function recoverOnStartup() {
   await repairWorktrees();
+  // Finished tasks have nothing left to merge; older recovery code could leave their merge flags behind.
+  db.prepare(`UPDATE tasks SET merge_state = NULL, merge_queued_at = NULL, merge_failure = NULL
+    WHERE status IN ('done', 'discarded') AND (merge_state IS NOT NULL OR merge_failure IS NOT NULL)`).run();
   // A merge the server didn't live to finish goes again (if it landed, repairWorktrees already marked the task done,
   // and if only the cleanup was cut short, merging again is a no-op that finishes it).
   db.prepare(`UPDATE tasks SET merge_state = 'queued' WHERE merge_state = 'merging'`).run();
