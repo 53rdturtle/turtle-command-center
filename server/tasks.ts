@@ -6,6 +6,7 @@ import {
   type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
+import { openResumeTerminal } from './openTerminal.ts';
 import { createWorktree, discardWorktree, mergeTaskBranch, saveAndRemoveWorktree } from './worktree.ts';
 
 /**
@@ -351,6 +352,16 @@ export async function discard(taskId: number) {
   const project = getProject(task.project_id)!;
   if (task.branch && task.worktree) await discardWorktree(project.path, task.worktree, task.branch);
   updateTask(taskId, { status: 'discarded', worktree: null });
+}
+
+/** Hands the session to an interactive terminal; stops the board's run first so two processes don't share it. */
+export async function openInTerminal(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (!task.started || !task.session_id || !task.worktree) throw new Error('This task has no session to resume');
+  if (task.status === 'running' || task.status === 'queued' || task.status === 'limited') await stop(taskId);
+  await openResumeTerminal(task.worktree, task.session_id, `#${taskId} ${task.title}`);
+  addEvent(taskId, 'user', 'Opened the session in a terminal.');
 }
 
 export function retry(taskId: number) {

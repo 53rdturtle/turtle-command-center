@@ -86,6 +86,11 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
           {showTranscript ? 'Hide transcript' : 'Transcript'}
         </button>
         {resumeCmd && (
+          <button className="ghost" disabled={busy} onClick={() => run(() => api.openTerminal(task.id))} title={task.status === 'running' ? 'Stops the agent and continues the session in a new terminal window' : 'Continue the session in a new terminal window'}>
+            Open in terminal
+          </button>
+        )}
+        {resumeCmd && (
           <button className="ghost" onClick={copyResume} title={resumeCmd}>
             {copied ? 'Copied ✓' : 'Copy resume cmd'}
           </button>
