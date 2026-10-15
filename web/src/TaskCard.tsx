@@ -120,7 +120,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
   const doneInMenu = !active && task.status !== 'done' && task.mergeState !== 'merging' && primary?.label !== 'Mark done';
 
   return (
-    <article id={`task-${task.id}`} className={`card status-${status}`}>
+    <article id={`task-${task.id}`} className={`card status-${status}`} tabIndex={-1} onKeyDown={cardKeys}>
       <header className="card-head">
         <div className="card-title">
           <span className="task-id" title={info || undefined}>#{task.id}</span>
@@ -225,6 +225,33 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
       {showTranscript && <Transcript taskId={task.id} />}
     </article>
   );
+}
+
+/** True when keys typed at `el` are text, so board shortcuts must leave them alone. */
+export const isTyping = (el: EventTarget | null) =>
+  el instanceof HTMLElement && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName));
+
+/** Shortcuts on a focused card: 1-4 pick a checkpoint option, r focuses the reply box, Enter toggles the details. */
+function cardKeys(e: KeyboardEvent<HTMLElement>) {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+  const card = e.currentTarget;
+  if (isTyping(e.target)) {
+    // Escape leaves the reply box so j/k work again.
+    if (e.key === 'Escape') card.focus();
+    return;
+  }
+  if (/^[1-4]$/.test(e.key)) {
+    // Options are plain buttons, so a discard option only opens the usual confirmation.
+    card.querySelectorAll<HTMLButtonElement>('[data-hotkeys] > button')[Number(e.key) - 1]?.click();
+  } else if (e.key === 'r') {
+    const box = card.querySelector<HTMLTextAreaElement>('.reply textarea');
+    if (!box) return;
+    box.focus();
+  } else if (e.key === 'Enter' && e.target === card) {
+    // Only on the card itself; Enter on a focused button keeps clicking that button.
+    card.querySelector<HTMLButtonElement>('.summary > .link')?.click();
+  } else return;
+  e.preventDefault();
 }
 
 /** A "⋯" button with a small dropdown; closes on outside click, Escape, or picking an item. */
@@ -353,10 +380,10 @@ function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActio
       {/* On a finished task the options are extra work the agent could do, so none is highlighted. */}
       {options.length > 0 && cp.done && <p className="options-label">Optional follow-ups (nothing more is needed):</p>}
       {options.length > 0 && (
-        <div className={cp.done ? 'options follow-ups' : 'options'}>
+        <div className={cp.done ? 'options follow-ups' : 'options'} data-hotkeys>
           {options.map((o, i) => (
             <button key={i} className={i === 0 && !cp.done ? 'option primary' : 'option'} disabled={busy} onClick={o.onClick!}>
-              <span>{o.label}</span>
+              <span>{i < 4 && <kbd className="hotkey">{i + 1}</kbd>}{o.label}</span>
               {o.detail && <small>{o.detail}</small>}
             </button>
           ))}

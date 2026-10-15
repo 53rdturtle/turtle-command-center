@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type StreamMessage, type Task, type TaskTemplate } from './api.ts';
-import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
+import { CardErrorBoundary, enterToSubmit, isTyping, TaskCard } from './TaskCard.tsx';
 import { ImageThumbs, useImageInput } from './images.tsx';
 import { ago } from './time.ts';
 import { duration, kTokens, totalTokens, usageBreakdown } from './usage.ts';
@@ -132,6 +132,8 @@ function Board({ project }: { project: Project }) {
   const limited = unfiltered.waiting.filter((t) => t.status === 'limited');
 
   useAttentionSignals(project, loaded, unfiltered.attention, unfiltered.review, limited);
+  const actionRef = useRef<HTMLDivElement>(null);
+  const [showKeys, setShowKeys] = useBoardKeys(actionRef);
 
   const card = (t: Task) => (
     <CardErrorBoundary key={t.id} taskId={t.id}>
@@ -161,7 +163,7 @@ function Board({ project }: { project: Project }) {
       {(actionColumn || workingColumn) && (
         <div className={`columns${actionColumn && workingColumn ? '' : ' single'}`}>
           {actionColumn && (
-            <div className="column">
+            <div className="column" ref={actionRef}>
               <h1 className="column-title">Action required <span className="count">{(shown('attention') ? attention.length : 0) + (shown('review') ? review.length : 0)}</span></h1>
               {shown('attention') && <Section title="Needs you" count={attention.length} empty={empty('Nothing waiting on you. 🎉')}>{attention.map(card)}</Section>}
               {shown('review') && (review.length > 0 || filter === 'review') && (
@@ -195,7 +197,56 @@ function Board({ project }: { project: Project }) {
           {(showDone || doneForced) && <div className="cards">{done.map(card)}</div>}
         </section>
       )}
+      {showKeys && <ShortcutHelp onClose={() => setShowKeys(false)} />}
     </main>
+  );
+}
+
+/** j/k move between the Action required cards and ? toggles the cheat sheet; per-card keys live in TaskCard. */
+function useBoardKeys(column: React.RefObject<HTMLDivElement | null>) {
+  const [showKeys, setShowKeys] = useState(false);
+  // Index of the last focused card, so after a card leaves the column j/k pick up where it was.
+  const cursor = useRef(0);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || isTyping(e.target)) return;
+      if (e.key === '?') setShowKeys((s) => !s);
+      else if (e.key === 'Escape') setShowKeys(false);
+      else if ((e.key === 'j' || e.key === 'k') && column.current) {
+        const cards = [...column.current.querySelectorAll<HTMLElement>('.card')];
+        if (!cards.length) return;
+        const at = cards.findIndex((c) => c.contains(document.activeElement));
+        const next = at < 0 ? Math.min(cursor.current, cards.length - 1) : at + (e.key === 'j' ? 1 : -1);
+        cursor.current = Math.max(0, Math.min(next, cards.length - 1));
+        cards[cursor.current].focus({ preventScroll: true });
+        cards[cursor.current].scrollIntoView({ block: 'nearest' });
+      } else return;
+      e.preventDefault();
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [column]);
+  return [showKeys, setShowKeys] as const;
+}
+
+const SHORTCUTS: [string, string][] = [
+  ['j / k', 'Next / previous card in Action required'],
+  ['1 – 4', "Pick the focused card's option"],
+  ['r', 'Reply to the focused card'],
+  ['Enter', 'Show or hide its details'],
+  ['Esc', 'Leave the reply box / close this'],
+  ['/', 'Search tasks'],
+  ['?', 'Show or hide these shortcuts'],
+];
+
+function ShortcutHelp({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="panel shortcuts" role="dialog" aria-label="Keyboard shortcuts" onClick={(e) => e.stopPropagation()}>
+        <h2>Keyboard shortcuts</h2>
+        <dl>{SHORTCUTS.map(([k, what]) => <div key={k}><dt><kbd>{k}</kbd></dt><dd>{what}</dd></div>)}</dl>
+      </div>
+    </div>
   );
 }
 
@@ -232,9 +283,6 @@ const matches = (query: string) => {
   };
 };
 
-const typingIn = (el: Element | null) =>
-  el instanceof HTMLElement && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName));
-
 function FilterBar({ query, onQuery, filter, onFilter, counts }: {
   query: string;
   onQuery: (q: string) => void;
@@ -245,7 +293,7 @@ function FilterBar({ query, onQuery, filter, onFilter, counts }: {
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !typingIn(document.activeElement)) {
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !isTyping(document.activeElement)) {
         e.preventDefault();
         input.current?.focus();
       }

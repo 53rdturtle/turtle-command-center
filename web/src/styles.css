@@ -386,3 +386,15 @@ button.chip-button:hover { color: var(--text); }
 .chip:hover { color: var(--text); background: var(--surface-2); }
 .chip-on, .chip-on:hover { color: var(--accent); border-color: var(--accent); background: var(--surface); }
 .columns.single { grid-template-columns: 1fr; }
+
+/* Keyboard shortcuts */
+.card:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card:focus:not(:focus-visible) { outline: none; }
+kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--surface-2); color: var(--text); }
+.option .hotkey { display: none; margin-right: 6px; }
+.card:focus-within .option .hotkey { display: inline; }
+.overlay { position: fixed; inset: 0; z-index: 20; background: rgb(0 0 0 / 0.3); display: grid; place-items: center; }
+.shortcuts { width: min(420px, 90vw); margin: 0; }
+.shortcuts dl { margin: 0; display: grid; gap: 6px; }
+.shortcuts dl div { display: grid; grid-template-columns: 90px 1fr; gap: 10px; align-items: baseline; }
+.shortcuts dd { margin: 0; font-size: 13px; }
