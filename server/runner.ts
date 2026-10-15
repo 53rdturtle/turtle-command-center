@@ -13,6 +13,8 @@ export interface RunRequest {
   permissionMode: string;
   dbPath: string;
   systemPrompt: string;
+  /** Long-lived token from `claude setup-token`, selecting the account to bill; null uses the CLI's own login. */
+  oauthToken: string | null;
 }
 
 /** Everything needed to find a run again after the server restarts. Stored as JSON on the task. */
@@ -113,6 +115,7 @@ export class CliRunner implements AgentRunner {
     const env: NodeJS.ProcessEnv = { ...process.env, MCP_TOOL_TIMEOUT: String(24 * 60 * 60 * 1000) };
     // An API key in the environment would bill the key instead of the subscription login.
     delete env.ANTHROPIC_API_KEY;
+    if (req.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = req.oauthToken;
 
     // Windows reports a missing cwd as "spawn claude ENOENT", which would send you looking for the wrong problem.
     if (!existsSync(req.cwd)) throw new Error(`The task's working directory no longer exists: ${req.cwd}`);

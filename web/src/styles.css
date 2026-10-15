@@ -113,6 +113,7 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .row.end { justify-content: flex-end; }
 .rules { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
 .rules li { display: flex; gap: 8px; align-items: center; }
+.panel form.row { align-items: flex-end; }
 
 .empty { text-align: center; padding: 64px 16px; color: var(--muted); }
 .empty h2 { color: var(--text); }

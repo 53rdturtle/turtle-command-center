@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Project, type Task } from './api.ts';
+import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type Project, type Task } from './api.ts';
 import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
@@ -9,6 +9,7 @@ export function App() {
   const [slug, setSlug] = useState(slugFromPath);
   const [showAddProject, setShowAddProject] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAccounts, setShowAccounts] = useState(false);
 
   const reloadProjects = useCallback(() => api.projects().then(setProjects), []);
   useEffect(() => {
@@ -50,6 +51,7 @@ export function App() {
         )}
         <button className="ghost" onClick={() => setShowAddProject(true)}>+ Project</button>
         {project && <button className="ghost" onClick={() => setShowSettings((s) => !s)}>Settings</button>}
+        <button className="ghost" onClick={() => setShowAccounts((s) => !s)}>Accounts</button>
         <span className="spacer" />
         <AgentSlots />
         <NotifyToggle />
@@ -73,6 +75,7 @@ export function App() {
         </div>
       )}
 
+      {showAccounts && <Accounts />}
       {project && showSettings && <ProjectSettings project={project} onSaved={reloadProjects} />}
       {project && <Board key={project.slug} project={project} />}
     </div>
@@ -296,6 +299,75 @@ function ProjectSettings({ project, onSaved }: { project: Project; onSaved: () =
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+/** Claude subscriptions to run agents on. When one hits its usage limit, tasks continue on the next. */
+function Accounts() {
+  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  const [form, setForm] = useState({ name: '', token: '' });
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const load = () => api.accounts().then(setAccounts).catch((e) => setError(e.message));
+    load();
+    const timer = setInterval(load, 15_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const run = (p: Promise<Account[]>) => {
+    setError(null);
+    return p.then(setAccounts).catch((e) => setError((e as Error).message));
+  };
+  const add = (e: React.FormEvent) => {
+    e.preventDefault();
+    run(api.addAccount(form).then((list) => (setForm({ name: '', token: '' }), list)));
+  };
+
+  return (
+    <section className="panel">
+      <h2>Accounts</h2>
+      <p className="muted">
+        Agents run on the first account below that has usage left. When it hits its limit, its tasks resume the same
+        session on the next one.
+      </p>
+      {accounts && (
+        <ul className="rules">
+          {accounts.map((a) => (
+            <li key={a.id}>
+              <strong>{a.name}</strong>
+              <span className="muted">
+                {a.usesToken ? 'token' : 'claude CLI login'}
+                {a.running > 0 && <> · {a.running} running</>}
+              </span>
+              {a.limitedUntil && (
+                <>
+                  <span className="pill pill-limited">Limited until {clock(a.limitedUntil)}</span>
+                  <button className="ghost small" onClick={() => run(api.clearAccountLimit(a.id))}>Use it now</button>
+                </>
+              )}
+              {accounts.length > 1 && (
+                <button className="ghost small" onClick={() => run(api.removeAccount(a.id))}>Remove</button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <form className="row" onSubmit={add}>
+        <label>Name<input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Second Pro account" /></label>
+        <label>Token
+          <input type="password" autoComplete="off" value={form.token} onChange={(e) => setForm((f) => ({ ...f, token: e.target.value }))} placeholder="sk-ant-oat01-…" />
+        </label>
+        <button type="submit" disabled={!form.name.trim() || !form.token.trim()}>Add account</button>
+      </form>
+      <p className="muted">
+        To get a token, run <code>claude setup-token</code> in a terminal and sign in with that account. It's stored in
+        this machine's command-center database only.
+      </p>
+      {error && <p className="error">{error}</p>}
     </section>
   );
 }
