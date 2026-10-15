@@ -61,6 +61,7 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
 
 export const api = {
   projects: () => call<Project[]>('GET', '/api/projects'),
+  pickFolder: () => call<{ path: string | null }>('POST', '/api/pick-folder').then((r) => r.path),
   addProject: (p: { name: string; path: string; defaultModel: string; permissionMode: string }) =>
     call<Project>('POST', '/api/projects', p),
   updateProject: (slug: string, p: Partial<Project>) => call<Project>('PATCH', `/api/projects/${slug}`, p),

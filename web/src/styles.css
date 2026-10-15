@@ -242,3 +242,6 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .merge-failure p { margin: 0 0 6px; }
 .merge-failure ul { margin: 0; padding-left: 20px; }
 .merge-failure pre { background: var(--surface); padding: 8px 10px; border-radius: 6px; max-height: 160px; overflow: auto; }
+
+.path-row { display: flex; gap: 8px; }
+.path-row button { white-space: nowrap; }

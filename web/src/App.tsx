@@ -200,6 +200,23 @@ function NewTask({ project }: { project: Project }) {
 function AddProject({ onClose, onAdded }: { onClose: () => void; onAdded: (p: Project) => void }) {
   const [form, setForm] = useState({ name: '', path: '', defaultModel: 'sonnet', permissionMode: 'acceptEdits' });
   const [error, setError] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+
+  const browse = async () => {
+    setPicking(true);
+    setError(null);
+    try {
+      const path = await api.pickFolder();
+      if (path) {
+        // Default the project name to the folder name.
+        setForm((f) => ({ ...f, path, name: f.name || path.split(/[\\/]/).filter(Boolean).pop() || '' }));
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPicking(false);
+    }
+  };
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -216,7 +233,14 @@ function AddProject({ onClose, onAdded }: { onClose: () => void; onAdded: (p: Pr
     <form className="panel" onSubmit={submit}>
       <h2>Add project</h2>
       <label>Name<input value={form.name} onChange={set('name')} placeholder="My side project" autoFocus /></label>
-      <label>Local repo path<input value={form.path} onChange={set('path')} placeholder="D:\code\my-project" /></label>
+      <label>Local repo path
+        <div className="path-row">
+          <input value={form.path} onChange={set('path')} placeholder="D:\code\my-project" />
+          <button type="button" className="ghost" disabled={picking} onClick={browse}>
+            {picking ? 'Choose in the dialog…' : 'Browse…'}
+          </button>
+        </div>
+      </label>
       <div className="row">
         <label>Default model<select value={form.defaultModel} onChange={set('defaultModel')}>{MODELS.map((m) => <option key={m}>{m}</option>)}</select></label>
         <label>Permission mode<select value={form.permissionMode} onChange={set('permissionMode')}>{PERMISSION_MODES.map((m) => <option key={m}>{m}</option>)}</select></label>

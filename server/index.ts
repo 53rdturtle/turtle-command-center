@@ -8,6 +8,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { MAX_CONCURRENT, PORT } from './config.ts';
 import { db, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
 import { mcpHandler } from './mcp.ts';
+import { pickFolder } from './pickFolder.ts';
 import {
   answerPermission, approveSplit, createTask, discard, markDone, recoverOnStartup,
   merge, reply, retry, runningCount, stop, subscribe, toDto,
@@ -53,6 +54,8 @@ app.patch('/api/projects/:slug', async (c) => {
   );
   return c.json(await projectDto(getProjectBySlug(project.slug)!));
 });
+
+app.post('/api/pick-folder', async (c) => c.json({ path: await pickFolder() }));
 
 // ---------- tasks ----------
 
