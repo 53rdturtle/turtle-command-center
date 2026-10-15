@@ -120,7 +120,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
   const doneInMenu = !active && task.status !== 'done' && task.mergeState !== 'merging' && primary?.label !== 'Mark done';
 
   return (
-    <article className={`card status-${status}`}>
+    <article id={`task-${task.id}`} className={`card status-${status}`}>
       <header className="card-head">
         <div className="card-title">
           <span className="task-id" title={info || undefined}>#{task.id}</span>
