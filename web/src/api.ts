@@ -110,5 +110,8 @@ export function onStream(fn: Handler) {
 export const MODELS = ['sonnet', 'opus', 'haiku'];
 export const PERMISSION_MODES = ['acceptEdits', 'auto', 'manual', 'plan', 'bypassPermissions'];
 
+/** The agent reported done=true and is just waiting around (e.g. for a merge); it lives in the Done section. */
+export const agentDone = (t: Task) => t.status === 'needs_input' && Boolean(t.checkpoint?.done) && t.permissions.length === 0;
+
 export const needsAttention = (t: Task) =>
-  t.permissions.length > 0 || t.status === 'needs_input' || t.status === 'split_proposed' || t.status === 'failed';
+  t.permissions.length > 0 || (t.status === 'needs_input' && !agentDone(t)) || t.status === 'split_proposed' || t.status === 'failed';
