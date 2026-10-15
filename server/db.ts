@@ -85,9 +85,11 @@ for (const [name, type] of [
   ['run_ref', 'TEXT'], // the live agent process (JSON from AgentRunner.start)
   ['run_offset', 'INTEGER NOT NULL DEFAULT 0'], // bytes of the run's output log already processed
   ['run_prompt', 'TEXT'], // prompt of the current run, for retrying after a usage limit
-  ['merge_state', 'TEXT'], // 'resolving' while the agent resolves merge conflicts; the board then finishes the merge
+  ['merge_state', 'TEXT'], // place in the merge queue: 'queued', 'merging', or 'resolving' while the agent resolves conflicts
   ['merge_attempts', 'INTEGER NOT NULL DEFAULT 0'], // automatic conflict-resolution rounds for the current merge
   ['account_id', 'INTEGER'], // account of the current (or last) run
+  ['merge_queued_at', 'INTEGER'], // when Merge was clicked; the merge queue goes in this order
+  ['merge_failure', 'TEXT'], // why the last merge didn't land (JSON MergeFailure), until dismissed or retried
   ['context_tokens', 'INTEGER'], // tokens in the session's context as of its latest model call
   ['context_window', 'INTEGER'], // the model's context window size, reported when a run ends
 ] as const) {
@@ -121,9 +123,12 @@ export interface TaskRow {
   pending_prompt: string | null; error: string | null; retry_at: number | null; cost_usd: number;
   created_at: number; updated_at: number;
   rev: number; run_ref: string | null; run_offset: number; run_prompt: string | null;
-  merge_state: 'resolving' | null; merge_attempts: number; account_id: number | null;
+  merge_state: MergeState | null; merge_attempts: number; account_id: number | null;
+  merge_queued_at: number | null; merge_failure: string | null;
   context_tokens: number | null; context_window: number | null;
 }
+export type MergeState = 'queued' | 'merging' | 'resolving';
+export interface MergeFailure { target: string; conflicts: string[]; message: string }
 export interface AccountRow { id: number; name: string; token: string | null; limited_until: number | null; created_at: number }
 export interface EventRow { id: number; task_id: number; ts: number; kind: string; text: string }
 export interface PermissionRow {

@@ -104,7 +104,10 @@ function Board({ project }: { project: Project }) {
   const all = [...tasks.values()];
   const byUpdate = (a: Task, b: Task) => a.updatedAt - b.updatedAt;
   const attention = all.filter(needsAttention).sort(byUpdate);
-  const working = all.filter((t) => !needsAttention(t) && ['running', 'queued', 'limited'].includes(t.status)).sort(byUpdate);
+  const working = all.filter((t) => !needsAttention(t) && !t.mergeState && ['running', 'queued', 'limited'].includes(t.status)).sort(byUpdate);
+  // Merging now, then the queue in order, then tasks whose agent is resolving conflicts before rejoining it.
+  const mergeOrder = (t: Task) => t.mergePosition ?? Infinity;
+  const mergeQueue = all.filter((t) => !needsAttention(t) && t.mergeState).sort((a, b) => mergeOrder(a) - mergeOrder(b) || byUpdate(a, b));
   const parked = all.filter((t) => !needsAttention(t) && t.status === 'split');
   const review = all.filter(agentDone).sort(byUpdate);
   const done = all.filter((t) => t.status === 'done').sort((a, b) => b.updatedAt - a.updatedAt);
@@ -133,8 +136,11 @@ function Board({ project }: { project: Project }) {
           {review.length > 0 && <Section title="Ready for review" count={review.length}>{review.map(card)}</Section>}
         </div>
         <div className="column">
-          <h1 className="column-title">Working <span className="count">{working.length + parked.length}</span></h1>
+          <h1 className="column-title">Working <span className="count">{working.length + mergeQueue.length + parked.length}</span></h1>
           <Section title="Running" count={working.length} empty="No agents running.">{working.map(card)}</Section>
+          {mergeQueue.length > 0 && (
+            <Section title={`Merging into ${project.currentBranch ?? 'your branch'}`} count={mergeQueue.length}>{mergeQueue.map(card)}</Section>
+          )}
           {parked.length > 0 && <Section title="Split into subtasks" count={parked.length}>{parked.map(card)}</Section>}
         </div>
       </div>

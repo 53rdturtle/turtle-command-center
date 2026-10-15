@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { api, onStream, type Checkpoint, type DiffFile, type MergeResult, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent } from './api.ts';
+import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -12,6 +12,12 @@ const STATUS_LABEL: Record<Task['status'], string> = {
   failed: 'Failed',
   done: 'Done',
   discarded: 'Discarded',
+};
+
+const MERGE_LABEL: Record<NonNullable<Task['mergeState']>, string> = {
+  queued: 'Merge queued',
+  merging: 'Merging',
+  resolving: 'Resolving conflicts',
 };
 
 function useAction() {
@@ -33,7 +39,7 @@ function useAction() {
 
 /** True when the task branch has work the checkout lacks; rechecked on task updates, branch switches and window focus. */
 function useMergeable(task: Task, targetBranch: string | null) {
-  const eligible = Boolean(task.branch && task.worktree) && !['running', 'queued', 'done'].includes(task.status);
+  const eligible = Boolean(task.branch && task.worktree) && !task.mergeState && !['running', 'queued', 'done'].includes(task.status);
   const [mergeable, setMergeable] = useState(false);
   useEffect(() => {
     if (!eligible) return setMergeable(false);
@@ -57,18 +63,14 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel }:
   const [showChanges, setShowChanges] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [mergeFailure, setMergeFailure] = useState<Extract<MergeResult, { message: string }> | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : task.status;
   const active = task.status === 'running' || task.status === 'queued';
   const canMerge = useMergeable(task, targetBranch);
   const hasWorktree = Boolean(task.branch && task.worktree);
   const diff = useDiff(task, hasWorktree && (showChanges || !['running', 'queued'].includes(task.status)));
-  const merge = () => run(async () => {
-    setMergeFailure(null);
-    const result = await api.merge(task.id);
-    if (!result.ok && !('resolving' in result)) setMergeFailure(result);
-  });
+  const merge = () => run(() => api.merge(task.id));
+  const target = targetBranch ?? 'your branch';
 
   const resumeCmd = task.sessionId && task.worktree ? `cd "${task.worktree}" && claude --resume ${task.sessionId}` : null;
   const copyResume = async () => {
@@ -89,12 +91,14 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel }:
   // One primary action per card; everything else sits in the "⋯" menu.
   const primary: { label: string; run: () => Promise<unknown>; title?: string; quiet?: boolean } | null =
     active ? { label: 'Stop', run: () => api.stop(task.id), quiet: true }
+    : task.mergeState === 'queued' ? { label: 'Remove from merge queue', run: () => api.cancelMerge(task.id), quiet: true }
+    : task.mergeState === 'merging' ? null
     : task.status === 'failed' || task.status === 'limited' ? { label: 'Retry now', run: () => api.retry(task.id) }
     : canMerge ? { label: `Merge into ${targetBranch ?? 'current branch'}`, run: merge, title: `Merge ${task.branch} into the branch checked out in your repo`, quiet: !task.checkpoint?.done }
     : task.status !== 'done' ? { label: 'Mark done', run: () => api.done(task.id), title: 'Keep the branch, remove the worktree', quiet: !task.checkpoint?.done }
     : null;
   // Mark done moves to the menu whenever another action takes the primary slot.
-  const doneInMenu = !active && task.status !== 'done' && primary?.label !== 'Mark done';
+  const doneInMenu = !active && task.status !== 'done' && task.mergeState !== 'merging' && primary?.label !== 'Mark done';
 
   return (
     <article className={`card status-${status}`}>
@@ -104,8 +108,8 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel }:
           <h3>{task.title}</h3>
         </div>
         <span className={`pill pill-${status}`}>
-          {status === 'running' && <span className="spinner" />}
-          {task.permissions.length ? 'Permission' : task.merging ? 'Merging' : STATUS_LABEL[task.status]}
+          {(status === 'running' || task.mergeState === 'merging') && <span className="spinner" />}
+          {task.permissions.length ? 'Permission' : task.mergeState ? MERGE_LABEL[task.mergeState] : STATUS_LABEL[task.status]}
         </span>
       </header>
 
@@ -121,16 +125,22 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel }:
       </div>
 
       <div className="card-body">
-        {task.merging && (
+        {task.mergeState === 'queued' && (
           <p className="merging-banner">
-            Merging into {targetBranch ?? 'your branch'}: the agent is resolving conflicts with it first. The board merges once it's done.
+            {task.mergePosition === 1 ? 'Next' : `#${task.mergePosition}`} in line to merge into {target}. Merges land one at a time.
+          </p>
+        )}
+        {task.mergeState === 'merging' && <p className="merging-banner">Merging into {target}…</p>}
+        {task.mergeState === 'resolving' && (
+          <p className="merging-banner">
+            Merging into {target}: the agent is resolving conflicts with it first. It rejoins the merge queue once it's done.
           </p>
         )}
         {task.permissions.map((p) => <PermissionRequest key={p.id} p={p} />)}
         <Body task={task} children={children} />
       </div>
 
-      {mergeFailure && <MergeFailure taskId={task.id} failure={mergeFailure} onDismiss={() => setMergeFailure(null)} />}
+      {task.mergeFailure && <MergeFailureNotice taskId={task.id} failure={task.mergeFailure} />}
       {error && <p className="error">{error}</p>}
 
       <footer className="card-actions">
@@ -360,14 +370,13 @@ function SplitReview({ task }: { task: Task }) {
   );
 }
 
-function MergeFailure({ taskId, failure, onDismiss }: { taskId: number; failure: Extract<MergeResult, { message: string }>; onDismiss: () => void }) {
+function MergeFailureNotice({ taskId, failure }: { taskId: number; failure: MergeFailure }) {
   const { busy, error, run } = useAction();
-  const askAgent = () => run(async () => {
-    await api.reply(taskId,
-      `Merging into \`${failure.target}\` conflicts in: ${failure.conflicts.join(', ')}. ` +
-      `Run \`git merge ${failure.target}\` in your worktree, resolve the conflicts, run any relevant checks, commit, and report back.`);
-    onDismiss();
-  });
+  // Replying also clears the failure.
+  const askAgent = () => run(() => api.reply(taskId,
+    `Merging into \`${failure.target}\` conflicts in: ${failure.conflicts.join(', ')}. ` +
+    `Run \`git merge ${failure.target}\` in your worktree, resolve the conflicts, run any relevant checks, commit, and report back.`));
+  const onDismiss = () => run(() => api.dismissMergeFailure(taskId));
   return (
     <div className="merge-failure">
       {failure.conflicts.length > 0 ? (
