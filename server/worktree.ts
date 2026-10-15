@@ -58,11 +58,30 @@ function unlinkLinks(dir: string) {
 }
 
 /**
+ * Stops programs running from the worktree, e.g. a dev server an agent started to test its change and left
+ * running. Windows won't delete a folder that a running program uses ("Permission denied").
+ */
+async function stopProcessesIn(path: string) {
+  if (process.platform !== 'win32') return;
+  const script = `$wt = $env:TCC_WORKTREE.ToLower().TrimEnd('\\') + '\\'
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.ProcessId -ne $PID -and
+  $_.CommandLine.Replace('/', '\\').ToLower().Contains($wt) } | ForEach-Object { $_.ProcessId }`;
+  const { stdout } = await exec('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
+    { windowsHide: true, env: { ...process.env, TCC_WORKTREE: resolve(path) } });
+  for (const pid of stdout.split(/\s+/).filter(Boolean)) {
+    await exec('taskkill', ['/PID', pid, '/T', '/F'], { windowsHide: true }).catch(() => {}); // may be gone already
+  }
+}
+
+/**
  * On Windows, `git worktree remove --force` follows junctions and deletes what they point to. Agents sometimes
  * link the main checkout's node_modules into their worktree, which wiped it on merge; so unlink links first.
  */
 async function removeWorktree(repo: string, path: string) {
-  if (existsSync(path)) unlinkLinks(path);
+  if (existsSync(path)) {
+    await stopProcessesIn(path).catch((err) => console.error(`[worktree] stopping programs in ${path}:`, err));
+    unlinkLinks(path);
+  }
   await git(repo, 'worktree', 'remove', '--force', path);
 }
 
