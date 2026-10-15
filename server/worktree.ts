@@ -75,7 +75,7 @@ export type MergeResult =
 
 /**
  * Merges a task branch into whatever branch the main checkout is on.
- * On conflicts the merge is aborted, leaving the user's checkout as it was.
+ * On conflicts nothing is merged, leaving the user's checkout as it was.
  */
 export async function mergeTaskBranch(repo: string, worktree: string, branch: string, taskId: number, message: string): Promise<MergeResult> {
   if ((await git(worktree, 'status', '--porcelain')) !== '') {
@@ -83,6 +83,16 @@ export async function mergeTaskBranch(repo: string, worktree: string, branch: st
     await git(worktree, 'commit', '-m', `tcc: uncommitted work from task #${taskId}`);
   }
   const target = (await currentBranch(repo)) ?? 'HEAD';
+  // Find conflicts in memory first. A conflicting `git merge` writes conflict markers into the checkout, and when
+  // the project is this app, that restarts the dev server before the merge can be aborted or reported.
+  try {
+    await git(repo, 'merge-tree', '--write-tree', '--name-only', 'HEAD', branch);
+  } catch (err: any) {
+    // Exit code 1 means conflicts. stdout is the tree id, the conflicted paths, a blank line, then git's messages.
+    if (err.code !== 1) throw err;
+    const [files, messages = ''] = String(err.stdout).split(/\r?\n\r?\n/);
+    return { ok: false, target, conflicts: files.split(/\r?\n/).slice(1).filter(Boolean), message: messages.trim() };
+  }
   try {
     await git(repo, 'merge', '--no-ff', '-m', message, branch);
   } catch (err: any) {
