@@ -54,7 +54,7 @@ export function App() {
         <button className="ghost" onClick={() => setShowAccounts((s) => !s)}>Accounts</button>
         <span className="spacer" />
         <BoardUpdate />
-        <UsagePill />
+        <UsagePills />
         <AgentSlots />
         <NotifyToggle />
       </header>
@@ -408,6 +408,14 @@ const resetLabel = (w: UsageWindow) => {
   const sameDay = new Date(w.resetsAt).toDateString() === new Date().toDateString();
   return `resets ${sameDay ? clock(w.resetsAt) : new Date(w.resetsAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`;
 };
+/** Compact time until reset: "2h 14m" within a day, else the weekday and hour. */
+const resetShort = (w: UsageWindow) => {
+  if (!w.resetsAt) return 'reset';
+  const min = Math.max(0, Math.round((w.resetsAt - Date.now()) / 60_000));
+  if (min < 60) return `${min}m`;
+  if (min < 24 * 60) return `${Math.floor(min / 60)}h ${min % 60}m`;
+  return new Date(w.resetsAt).toLocaleString([], { weekday: 'short', hour: 'numeric' });
+};
 
 function UsageBar({ label, window: w }: { label: string; window: UsageWindow }) {
   const level = w.utilization >= 0.9 ? 'high' : w.utilization >= 0.7 ? 'mid' : 'low';
@@ -416,6 +424,7 @@ function UsageBar({ label, window: w }: { label: string; window: UsageWindow }) 
       <span className="usage-label">{label}</span>
       <span className="usage-bar"><span className={`usage-fill usage-${level}`} style={{ width: percent(w) }} /></span>
       <span className="usage-pct">{percent(w)}</span>
+      <span className="usage-reset">↻ {resetShort(w)}</span>
     </span>
   );
 }
@@ -432,21 +441,56 @@ function Usage({ usage }: { usage: AccountUsage | null }) {
   );
 }
 
-/** The account new runs start on, and how much of its usage is left. */
-function UsagePill() {
-  const [usage, setUsage] = useState<(AccountUsage & { account: string }) | null>(null);
-  useEffect(() => onStream((m) => m.type === 'status' && setUsage(m.usage ?? null)), []);
-  if (!usage?.fiveHour && !usage?.sevenDay) return null;
-  const title = [
-    usage.account,
-    usage.fiveHour && `5-hour: ${percent(usage.fiveHour)} used, ${resetLabel(usage.fiveHour)}`,
-    usage.sevenDay && `7-day: ${percent(usage.sevenDay)} used, ${resetLabel(usage.sevenDay)}`,
-    `as of ${ago(usage.reportedAt)}`,
-  ].filter(Boolean).join('\n');
+/** One pill per account: how much of its usage is left, and which one new runs start on. */
+function UsagePills() {
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  useEffect(() => onStream((m) => m.type === 'status' && setAccounts(m.accounts ?? [])), []);
+  if (!accounts.some((a) => a.usage || a.limitedUntil)) return null;
+  const several = accounts.length > 1;
   return (
-    <span className="slots" title={title}>
-      {usage.fiveHour && <UsageBar label="5h" window={usage.fiveHour} />}
-      {usage.sevenDay && <UsageBar label="7d" window={usage.sevenDay} />}
+    <span className="usage-pills">
+      {accounts.map((a) => <AccountPill key={a.id} account={a} marked={several && a.active} compact={several && !a.active} />)}
+    </span>
+  );
+}
+
+/** Compact pills (accounts not in use) show just the 5-hour percentage; hover for the rest. */
+function AccountPill({ account: a, marked, compact }: { account: Account; marked: boolean; compact: boolean }) {
+  const usage = a.usage;
+  const title = [
+    `${a.name}${marked ? ' (in use)' : ''}`,
+    a.limitedUntil && `Hit its usage limit; back at ${clock(a.limitedUntil)}`,
+    usage?.fiveHour && `5-hour: ${percent(usage.fiveHour)} used, ${resetLabel(usage.fiveHour)}`,
+    usage?.sevenDay && `7-day: ${percent(usage.sevenDay)} used, ${resetLabel(usage.sevenDay)}`,
+    usage ? `as of ${ago(usage.reportedAt)}` : 'No usage reported yet; it shows after a run on this account',
+  ].filter(Boolean).join('\n');
+  if (compact) {
+    return (
+      <span className="slots usage-pill" title={title}>
+        <span className="usage-account">{a.name}</span>
+        {a.limitedUntil ? (
+          <span className="usage usage-limited">back {clock(a.limitedUntil)}</span>
+        ) : usage?.fiveHour ? (
+          <span className="usage">5h <span className="usage-pct">{percent(usage.fiveHour)}</span></span>
+        ) : (
+          <span className="usage">—</span>
+        )}
+      </span>
+    );
+  }
+  return (
+    <span className={`slots usage-pill${marked ? ' usage-pill-active' : ''}`} title={title}>
+      <span className="usage-account">{a.name}</span>
+      {a.limitedUntil ? (
+        <span className="usage usage-limited">limited · back {clock(a.limitedUntil)}</span>
+      ) : usage?.fiveHour || usage?.sevenDay ? (
+        <>
+          {usage.fiveHour && <UsageBar label="5h" window={usage.fiveHour} />}
+          {usage.sevenDay && <UsageBar label="7d" window={usage.sevenDay} />}
+        </>
+      ) : (
+        <span className="usage">no data yet</span>
+      )}
     </span>
   );
 }

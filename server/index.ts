@@ -149,9 +149,7 @@ app.get('/api/stream', (c) =>
     });
     stream.onAbort(() => { unsubscribe(); });
     while (!stream.aborted) {
-      const account = accountsDto().find((a) => a.active);
-      const usage = account?.usage ? { account: account.name, ...account.usage } : null;
-      await stream.writeSSE({ event: 'status', data: JSON.stringify({ ...status(), usage }) });
+      await stream.writeSSE({ event: 'status', data: JSON.stringify({ ...status(), accounts: accountsDto() }) });
       await stream.sleep(5000);
     }
   }));
