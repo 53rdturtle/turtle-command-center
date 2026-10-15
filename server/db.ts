@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DATA_DIR } from './config.ts';
+import { DATA_DIR, DEFAULT_MAX_CONCURRENT } from './config.ts';
 
 mkdirSync(DATA_DIR, { recursive: true });
 export const DB_PATH = join(DATA_DIR, 'tcc.db');
@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS permissions (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pending_permissions ON permissions(task_id, status);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
 
 // Columns added after v0.1.
@@ -149,3 +153,11 @@ export const pendingPermissions = (taskId: number) =>
     .all(taskId) as unknown as PermissionRow[];
 export const getPermission = (id: string) =>
   db.prepare('SELECT * FROM permissions WHERE id = ?').get(id) as PermissionRow | undefined;
+
+export function getMaxConcurrent() {
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'max_concurrent'`).get() as { value: string } | undefined;
+  return row ? Number(row.value) : DEFAULT_MAX_CONCURRENT;
+}
+export const saveMaxConcurrent = (n: number) =>
+  db.prepare(`INSERT INTO settings (key, value) VALUES ('max_concurrent', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+    .run(String(n));

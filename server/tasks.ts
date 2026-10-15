@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { LIMIT_RETRY_MS, MAX_CONCURRENT } from './config.ts';
+import { LIMIT_RETRY_MS } from './config.ts';
 import {
-  addEvent, db, DB_PATH, getPermission, getProject, getTask, lastEvent, pendingPermissions,
-  setRunOffset, tasksWithStatus, updateTask,
+  addEvent, db, DB_PATH, getMaxConcurrent, getPermission, getProject, getTask, lastEvent, pendingPermissions,
+  saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
   type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
@@ -164,6 +164,13 @@ function initialPrompt(task: TaskRow) {
 const runningCount = () => (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'running'`).get() as { n: number }).n;
 export { runningCount };
 
+/** Lowering the max never stops running agents; it only holds back queued ones. */
+export function setMaxConcurrent(n: number) {
+  if (!Number.isInteger(n) || n < 1 || n > 50) throw new Error('Max agents must be a whole number from 1 to 50');
+  saveMaxConcurrent(n);
+  pump();
+}
+
 /** Puts a prompt in line for the task's session; multiple queued prompts are combined. */
 function enqueue(taskId: number, prompt: string) {
   const task = getTask(taskId)!;
@@ -173,7 +180,7 @@ function enqueue(taskId: number, prompt: string) {
 }
 
 function pump() {
-  while (runningCount() < MAX_CONCURRENT) {
+  while (runningCount() < getMaxConcurrent()) {
     const next = tasksWithStatus('queued')[0];
     if (!next) return;
     updateTask(next.id, { status: 'running', checkpoint: null, split: null, error: null });

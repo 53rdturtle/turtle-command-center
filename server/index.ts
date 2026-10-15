@@ -5,12 +5,12 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { MAX_CONCURRENT, PORT } from './config.ts';
-import { db, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
+import { PORT } from './config.ts';
+import { db, getMaxConcurrent, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
   answerPermission, approveSplit, createTask, discard, markDone, recoverOnStartup,
-  merge, mergeable, openInTerminal, reply, retry, runningCount, stop, subscribe, toDto,
+  merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, toDto,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
 
@@ -103,7 +103,13 @@ app.post('/api/permissions/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-app.get('/api/status', (c) => c.json({ running: runningCount(), maxConcurrent: MAX_CONCURRENT }));
+const status = () => ({ running: runningCount(), maxConcurrent: getMaxConcurrent() });
+app.get('/api/status', (c) => c.json(status()));
+app.patch('/api/settings', async (c) => {
+  const { maxConcurrent } = await c.req.json();
+  setMaxConcurrent(Number(maxConcurrent));
+  return c.json(status());
+});
 
 // ---------- live updates ----------
 
@@ -114,7 +120,7 @@ app.get('/api/stream', (c) =>
     });
     stream.onAbort(() => { unsubscribe(); });
     while (!stream.aborted) {
-      await stream.writeSSE({ event: 'status', data: JSON.stringify({ running: runningCount(), maxConcurrent: MAX_CONCURRENT }) });
+      await stream.writeSSE({ event: 'status', data: JSON.stringify(status()) });
       await stream.sleep(5000);
     }
   }));

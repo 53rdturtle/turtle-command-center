@@ -83,6 +83,8 @@ export const api = {
   mergeable: (id: number) => call<{ mergeable: boolean }>('GET', `/api/tasks/${id}/mergeable`).then((r) => r.mergeable),
   merge: (id: number) => call<MergeResult>('POST', `/api/tasks/${id}/merge`),
   permission: (id: string, decision: 'allow' | 'always' | 'deny') => call('POST', `/api/permissions/${id}`, { decision }),
+  setMaxConcurrent: (maxConcurrent: number) =>
+    call<{ running: number; maxConcurrent: number }>('PATCH', '/api/settings', { maxConcurrent }),
 };
 
 // ---------- live stream ----------
