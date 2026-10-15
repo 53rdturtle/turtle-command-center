@@ -125,6 +125,7 @@ function Board({ project }: { project: Project }) {
         children={all.filter((c) => c.parentId === t.id)}
         targetBranch={project.currentBranch}
         defaultModel={project.defaultModel}
+        tryCommand={project.tryCommand}
       />
     </CardErrorBoundary>
   );
@@ -299,6 +300,20 @@ function ProjectSettings({ project, onSaved }: { project: Project; onSaved: () =
           </select>
         </label>
       </div>
+      <label className="try-command">Try command
+        <input
+          key={project.tryCommand}
+          className="mono"
+          defaultValue={project.tryCommand}
+          placeholder={project.suggestedTryCommand || 'Empty: “Try it” just opens a shell in the worktree'}
+          onBlur={(e) => e.target.value.trim() !== project.tryCommand && save({ tryCommand: e.target.value })}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+        />
+        <span>
+          “Try it” on a task opens a terminal in its worktree and runs this. It gets free ports in <code>TCC_PORT</code> and{' '}
+          <code>TCC_DEV_PORT</code> and a sandbox <code>TCC_DATA_DIR</code>, so a copy of this board runs beside the real one with its own empty database.
+        </span>
+      </label>
       <h3>Always allowed</h3>
       {project.alwaysAllow.length === 0 ? (
         <p className="muted">Nothing yet. Use “Always allow” on a permission request to add rules.</p>

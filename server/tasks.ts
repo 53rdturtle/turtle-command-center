@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { LIMIT_RETRY_MS } from './config.ts';
+import { existsSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { join } from 'node:path';
+import { DATA_DIR, LIMIT_RETRY_MS } from './config.ts';
 import {
   addEvent, db, DB_PATH, getAccount, getMaxConcurrent, getPermission, getProject, getTask, lastEvent, listAccounts,
   listEvents, pendingPermissions, saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
   type AccountRow, type Checkpoint, type EventRow, type MergeFailure, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AccountUsage, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
-import { openResumeTerminal } from './openTerminal.ts';
+import { openResumeTerminal, openShellTerminal } from './openTerminal.ts';
 import { cleanupTaskImages, sweepImages } from './images.ts';
 import {
   createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff,
@@ -158,11 +160,12 @@ Rules:
 - EVERY turn must end with exactly one call to report_checkpoint (or propose_split), after which you stop and wait.
 - The summary is a TL;DR for someone glancing at a busy board: 2-3 plain sentences (max 350 characters, no bullets) saying what you found or did and what you need from them. Put evidence, file paths and caveats in details; the user opens it only when they want more.
 - Options are 1-4 concrete next steps the user can pick with one click. Each option's label is sent back to you verbatim as the user's reply, so make it self-contained. Put your recommendation first and end its label with "(Recommended)".
+- You can't ${task.branch ? 'merge your branch, ' : ''}mark the task done or discard it yourself; only the board can. To offer one of those, give the option an action (${task.branch ? '"merge", ' : ''}"done" or "discard") and clicking it runs the board's own button. Never ask the user to type or pick a reply asking you to do one of them.
 - Messages may include screenshots the user pasted, written as \`[Image: <path>]\`. Look at them with the Read tool.
 - Decide small things yourself. Ask before large, risky, or irreversible choices.
 - On your first turn, investigate (read the code, reproduce the problem, check constraints) and report findings plus a proposed plan. Don't make large changes before the user picks a direction, unless the task is trivial.
 - If the task is clearly too big for one session, with parts that can proceed independently in parallel, call propose_split with self-contained subtask prompts instead of report_checkpoint.
-- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, and you can't do ${task.branch ? 'either' : 'that'} from here, so never offer options like "mark this done"${task.branch ? ' or "merge"' : ''}. A done checkpoint's options are only for optional follow-up work; an empty list is fine.`;
+- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board already shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, so a done checkpoint's options are only for optional follow-up work; an empty list is fine.`;
 }
 
 function initialPrompt(task: TaskRow) {
@@ -712,6 +715,46 @@ export async function openInTerminal(taskId: number) {
   addEvent(taskId, 'user', 'Opened the session in a terminal.');
 }
 
+/** A port nothing is listening on right now. */
+function freePort() {
+  return new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address() as { port: number };
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+const tryDataDir = (taskId: number) => join(DATA_DIR, 'try', String(taskId));
+
+/** Best effort: a sandbox that is still running keeps its database open. */
+function removeTryData(taskId: number) {
+  try {
+    rmSync(tryDataDir(taskId), { recursive: true, force: true });
+  } catch {}
+}
+
+/**
+ * Opens a terminal in the task's worktree running the project's try command (a plain shell without one).
+ * It gets free ports and its own data dir as TCC_* variables, so when the project is this app the copy
+ * under test runs beside the board without sharing its database, scheduler or ports.
+ */
+export async function tryIt(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (!task.worktree || !existsSync(task.worktree)) throw new Error('This task has no worktree to try');
+  const project = getProject(task.project_id)!;
+  const env = {
+    TCC_PORT: String(await freePort()),
+    TCC_DEV_PORT: String(await freePort()),
+    TCC_DATA_DIR: tryDataDir(taskId),
+  };
+  await openShellTerminal(task.worktree, `Try #${taskId} ${task.title}`, project.try_command?.trim() || null, env);
+  return env;
+}
+
 export function retry(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
@@ -725,7 +768,7 @@ export function retry(taskId: number) {
 const isFinished = (t: TaskRow) => t.status === 'done' || t.status === 'discarded';
 
 /**
- * Sets a final status. When that finishes the last open subtask of a parent, the parent is queued
+ * Sets a final status and drops the task's "Try it" sandbox. When that finishes the last open subtask of a parent, the parent is queued
  * again to integrate the pieces. The check runs synchronously around the write, so concurrent calls
  * wake the parent exactly once per batch.
  */
@@ -741,6 +784,7 @@ function cleanupImages(fn: () => void) {
 function finishTask(taskId: number, fields: Partial<TaskRow>) {
   const wasOpen = !isFinished(getTask(taskId)!);
   updateTask(taskId, fields);
+  removeTryData(taskId);
   const task = getTask(taskId)!;
   if (wasOpen && isFinished(task)) cleanupImages(() => cleanupTaskImages(taskId));
   if (!task.parent_id) return;
