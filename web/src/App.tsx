@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type Task } from './api.ts';
+import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Account, type AccountUsage, type BoardVersion, type Project, type UsageWindow, type StreamMessage, type Task } from './api.ts';
 import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
 import { ImageThumbs, useImageInput } from './images.tsx';
+import { duration, kTokens, totalTokens, usageBreakdown } from './usage.ts';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
 
@@ -55,6 +56,7 @@ export function App() {
         <button className="ghost" onClick={() => setShowAccounts((s) => !s)}>Accounts</button>
         <span className="spacer" />
         <BoardUpdate />
+        {project && <TodayUsage slug={project.slug} />}
         <UsagePills />
         <AgentSlots />
         <NotifyToggle />
@@ -443,6 +445,16 @@ function Usage({ usage }: { usage: AccountUsage | null }) {
       <span className="muted usage-age">as of {ago(usage.reportedAt)}</span>
     </span>
   );
+}
+
+/** What this project's runs consumed today, next to the accounts' overall usage. */
+function TodayUsage({ slug }: { slug: string }) {
+  const [today, setToday] = useState<Extract<StreamMessage, { type: 'status' }>['usageToday'] | null>(null);
+  useEffect(() => onStream((m) => m.type === 'status' && setToday(m.usageToday ?? {})), []);
+  const u = today?.[slug];
+  if (!u) return null;
+  const title = [`This project today (${u.runs} finished run${u.runs === 1 ? '' : 's'}):`, ...usageBreakdown(u)].join('\n');
+  return <span className="slots" title={title}>Today {kTokens(totalTokens(u))} tok · {duration(u.durationMs)}</span>;
 }
 
 /** One pill per account: how much of its usage is left, and which one new runs start on. */

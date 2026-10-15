@@ -72,6 +72,22 @@ CREATE TABLE IF NOT EXISTS accounts (
   limited_until INTEGER, -- hit a usage limit; skipped until then
   created_at INTEGER NOT NULL
 );
+-- One row per finished run that reported its usage. The task's totals add up the same numbers.
+CREATE TABLE IF NOT EXISTS runs (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES tasks(id),
+  project_id INTEGER NOT NULL REFERENCES projects(id),
+  log TEXT UNIQUE NOT NULL, -- the run's output log; a run re-read after a restart is recorded only once
+  ended_at INTEGER NOT NULL,
+  input_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cache_read_tokens INTEGER NOT NULL,
+  cache_creation_tokens INTEGER NOT NULL,
+  turns INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  cost_usd REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS runs_by_project ON runs(project_id, ended_at);
 `);
 
 if (!db.prepare('SELECT 1 FROM accounts LIMIT 1').get()) {
@@ -92,6 +108,13 @@ for (const [name, type] of [
   ['merge_failure', 'TEXT'], // why the last merge didn't land (JSON MergeFailure), until dismissed or retried
   ['context_tokens', 'INTEGER'], // tokens in the session's context as of its latest model call
   ['context_window', 'INTEGER'], // the model's context window size, reported when a run ends
+  // Totals over every run that reported its usage (see the runs table).
+  ['input_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+  ['output_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+  ['cache_read_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+  ['cache_creation_tokens', 'INTEGER NOT NULL DEFAULT 0'],
+  ['turns', 'INTEGER NOT NULL DEFAULT 0'],
+  ['duration_ms', 'INTEGER NOT NULL DEFAULT 0'], // wall time the agent spent running
 ] as const) {
   if (!taskColumns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
 }
@@ -140,6 +163,8 @@ export interface TaskRow {
   merge_state: MergeState | null; merge_attempts: number; account_id: number | null;
   merge_queued_at: number | null; merge_failure: string | null;
   context_tokens: number | null; context_window: number | null;
+  input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number;
+  turns: number; duration_ms: number;
 }
 export type MergeState = 'queued' | 'merging' | 'resolving';
 export type MergeFailureReason = 'dirty' | 'detached' | 'in_progress' | 'conflicts' | 'error';
