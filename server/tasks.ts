@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { LIMIT_RETRY_MS, MAX_CONCURRENT } from './config.ts';
 import {
-  addEvent, db, DB_PATH, getPermission, getProject, getTask, lastEvent, pendingPermissions,
+  addEvent, db, DB_PATH, getPermission, getProject, getTask, lastEvent, listEvents, pendingPermissions,
   setRunOffset, tasksWithStatus, updateTask,
   type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
@@ -337,12 +337,35 @@ export async function merge(taskId: number) {
   if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
   if (task.status === 'running') throw new Error('Task is running; wait for its checkpoint or stop it first');
   const project = getProject(task.project_id)!;
-  const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, `Merge task #${taskId}: ${task.title}`);
+  const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, mergeMessage(task));
   if (result.ok) {
     updateTask(taskId, { status: 'done', worktree: null, branch: null });
     addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
   }
   return result;
+}
+
+// Prompts and notes the board writes into the timeline itself, as opposed to the user's replies.
+const BOARD_EVENTS = [
+  /^You were interrupted by a usage limit\./, /^Your previous run ended unexpectedly\./,
+  /^Merged `/, /^Approved split into \d+ subtasks\.$/, /^Opened the session in a terminal\.$/,
+];
+const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max).trimEnd()}…` : s);
+
+/**
+ * The task's request, outcome and the user's replies go into the merge commit, so git history
+ * keeps the "why" and an agent can answer questions about past work from `git log` alone.
+ */
+function mergeMessage(task: TaskRow) {
+  const parts = [`Merge task #${task.id}: ${task.title}`];
+  if (task.description.trim()) parts.push(`Request:\n${clip(task.description.trim(), 2000)}`);
+  const [first, ...rest] = listEvents(task.id).filter((e) => e.kind === 'user').map((e) => e.text.trim());
+  // A run that hit a usage limit before starting re-sends the initial prompt, so skip repeats of it.
+  const replies = rest.filter((t) => t && t !== first && !BOARD_EVENTS.some((re) => re.test(t)));
+  if (replies.length) parts.push(`My replies:\n${replies.map((r) => `- ${clip(r, 500).replace(/\s*\n+\s*/g, ' ')}`).join('\n')}`);
+  const cp = task.checkpoint ? (JSON.parse(task.checkpoint) as Checkpoint) : null;
+  if (cp) parts.push(`Outcome:\n${clip(cp.details ? `${cp.summary}\n\n${cp.details}` : cp.summary, 4000)}`);
+  return parts.join('\n\n');
 }
 
 export async function discard(taskId: number) {
