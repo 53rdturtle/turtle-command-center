@@ -240,10 +240,19 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .permission p { margin: 0 0 6px; }
 .permission pre { background: var(--surface); padding: 8px 10px; border-radius: 6px; max-height: 200px; overflow: auto; }
 
-.subtasks { padding-left: 20px; margin: 10px 0 0; display: grid; gap: 10px; }
-.subtasks li { display: grid; gap: 6px; }
-.subtasks li input { font-weight: 600; }
-.subtasks li button { justify-self: start; }
+.subtasks { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 4px; }
+.subtasks li { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+.subtasks li.unpicked { opacity: 0.55; }
+.subtask-row { display: flex; align-items: flex-start; gap: 8px; }
+.subtask-row input[type="checkbox"] { margin-top: 3px; flex: none; }
+.subtask-head {
+  flex: 1; min-width: 0; display: grid; gap: 2px; text-align: left;
+  background: none; border: none; padding: 0; color: var(--text); font: inherit; cursor: pointer;
+}
+.subtask-head small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subtask-rec { justify-self: start; font-size: 11px; color: var(--accent); }
+.subtask-edit { display: grid; gap: 6px; margin: 8px 0 2px 24px; }
+.subtask-edit input { font-weight: 600; }
 .subtask-status { margin: 6px 0 0; padding-left: 20px; }
 
 .error { color: var(--danger); margin: 6px 0 0; font-size: 13px; }

@@ -16,6 +16,7 @@ db.exec('PRAGMA busy_timeout = 10000');
 
 const SUMMARY_MAX = 350;
 const BOARD_ACTIONS = ['merge', 'done', 'discard'];
+const SPLIT_MAX = 6;
 
 const TOOLS = [
   {
@@ -64,20 +65,27 @@ const TOOLS = [
   {
     name: 'propose_split',
     description:
-      'Propose splitting this task into parallel subtasks when it is too big for one session. ' +
-      'Each subtask runs in its own session and git worktree. Call instead of report_checkpoint, then stop.',
+      'Propose splitting this task into parallel subtasks when it is too big for one session, or when your findings are a list of ' +
+      'independent changes or suggestions (one subtask each, so every change stays scoped and gets its own diff and merge). ' +
+      'The user ticks which subtasks to create. Each subtask runs in its own session and git worktree. Call instead of report_checkpoint, then stop.',
     inputSchema: {
       type: 'object',
       properties: {
-        rationale: { type: 'string', description: 'Why split, and how the pieces fit together (markdown, short).' },
+        rationale: {
+          type: 'string',
+          description: 'Why split, and how the pieces fit together (markdown, short). Lower-value ideas you left out go here, one line each under "Also considered".',
+        },
         subtasks: {
           type: 'array',
           minItems: 2,
+          maxItems: SPLIT_MAX,
+          description: `At most ${SPLIT_MAX}, most valuable first.`,
           items: {
             type: 'object',
             properties: {
               title: { type: 'string' },
               prompt: { type: 'string', description: 'Self-contained instructions including relevant findings; the subtask agent has no access to this conversation.' },
+              recommended: { type: 'boolean', description: 'Starts ticked in the review. If none are recommended, all start ticked.' },
             },
             required: ['title', 'prompt'],
           },
@@ -210,9 +218,16 @@ async function callTool(name, args) {
       return text("Checkpoint shown to the user. End your turn now; their reply will arrive as the next message.");
     }
     case 'propose_split': {
-      const subtasks = list(args.subtasks).filter((s) => s?.title && s?.prompt);
+      const subtasks = list(args.subtasks)
+        .filter((s) => s?.title && s?.prompt)
+        .map(({ title, prompt, recommended }) => ({ title: String(title), prompt: String(prompt), ...(recommended === true && { recommended }) }));
       if (subtasks.length < 2) {
         return retryError('propose_split needs a rationale and at least 2 subtasks, each with title and prompt. Call it again with those filled in.');
+      }
+      if (subtasks.length > SPLIT_MAX) {
+        return retryError(
+          `You proposed ${subtasks.length} subtasks; the limit is ${SPLIT_MAX}. Keep the most valuable ones, list the rest in the rationale as one line each under "Also considered", then call propose_split again.`,
+        );
       }
       const rationale = String(args.rationale ?? '');
       updateTask({ split: JSON.stringify({ rationale, subtasks }) });

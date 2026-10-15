@@ -122,7 +122,7 @@ export interface Checkpoint {
 }
 export interface SplitProposal {
   rationale: string;
-  subtasks: { title: string; prompt: string }[];
+  subtasks: { title: string; prompt: string; recommended?: boolean }[];
 }
 
 export interface ProjectRow {
