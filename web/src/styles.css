@@ -256,3 +256,4 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 button.link { background: none; border: none; padding: 0; color: var(--accent); font-size: 12px; cursor: pointer; }
 button.link:hover { text-decoration: underline; }
 .summary .details { margin-top: 6px; padding: 8px 10px; border-left: 2px solid var(--border); color: var(--muted); font-size: 13px; }
+.merging-banner { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: var(--info-soft); color: var(--info); font-size: 13px; }

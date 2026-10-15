@@ -10,6 +10,7 @@ import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runn
 import { openResumeTerminal } from './openTerminal.ts';
 import {
   createWorktree, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, wasMerged,
+  type MergeResult,
 } from './worktree.ts';
 
 /**
@@ -118,6 +119,7 @@ export function toDto(t: TaskRow) {
     split: t.split ? (JSON.parse(t.split) as SplitProposal) : null,
     queuedPrompt: t.status === 'queued' || t.status === 'limited' ? t.pending_prompt : null,
     error: t.error,
+    merging: t.merge_state === 'resolving',
     retryAt: t.retry_at,
     costUsd: t.cost_usd,
     lastActivity: t.status === 'running' ? (lastEvent(t.id)?.text ?? null) : null,
@@ -268,6 +270,7 @@ function finish(taskId: number, result: RunResult) {
     const checkpoint: Checkpoint = { summary: result.resultText || '_The agent ended its turn without a summary._', options: [] };
     updateTask(taskId, { ...base, status: 'needs_input', checkpoint: JSON.stringify(checkpoint) });
   }
+  continueMerge(taskId);
 }
 
 // Retry tasks whose usage-limit cool-down has passed.
@@ -312,6 +315,8 @@ async function repairWorktrees() {
 
 export async function recoverOnStartup() {
   await repairWorktrees();
+  // A conflict-resolving run that ended while the server was down: finish (or drop) its merge.
+  for (const t of tasksWithStatus('needs_input')) if (t.merge_state === 'resolving') continueMerge(t.id);
   for (const t of tasksWithStatus('running')) {
     if (t.run_ref) {
       attach(t.id); // if the process has since exited, attach finishes it from its log
@@ -371,18 +376,89 @@ export async function markDone(taskId: number) {
   updateTask(taskId, { status: 'done', worktree: task.branch ? null : task.worktree });
 }
 
-export async function merge(taskId: number) {
+/** Automatic resolve-and-retry rounds per Merge click before the board asks you instead. */
+const MAX_MERGE_ATTEMPTS = 2;
+
+export type MergeOutcome = MergeResult | { ok: false; resolving: true; target: string; conflicts: string[] };
+
+let mergeChain: Promise<unknown> = Promise.resolve();
+/** Merges run one at a time, so two tasks never land on the checkout at once. */
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const next = mergeChain.then(fn, fn);
+  mergeChain = next.catch(() => {});
+  return next;
+}
+
+export async function merge(taskId: number): Promise<MergeOutcome> {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
   if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
-  if (task.status === 'running') throw new Error('Task is running; wait for its checkpoint or stop it first');
+  if (task.status === 'running' || task.status === 'queued') throw new Error('Task is running; wait for its checkpoint or stop it first');
+  updateTask(taskId, { merge_attempts: 0 });
+  return serialized(() => attemptMerge(taskId));
+}
+
+/**
+ * Merges the task branch; on conflicts, hands them to the task's own agent, which knows what its change is for.
+ * Once it reports done, `finish` calls this again.
+ */
+async function attemptMerge(taskId: number): Promise<MergeOutcome> {
+  const task = getTask(taskId)!;
+  if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
   const project = getProject(task.project_id)!;
   const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, `Merge task #${taskId}: ${task.title}`);
   if (result.ok) {
-    updateTask(taskId, { status: 'done', worktree: null, branch: null });
+    updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null });
     addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
+    return result;
   }
-  return result;
+  if (!result.conflicts.length || task.merge_attempts >= MAX_MERGE_ATTEMPTS) {
+    updateTask(taskId, { merge_state: null });
+    return result;
+  }
+  updateTask(taskId, { merge_state: 'resolving', merge_attempts: task.merge_attempts + 1 });
+  addEvent(taskId, 'user', `Merging into \`${result.target}\` conflicts in ${result.conflicts.join(', ')}; asked the agent to resolve them.`);
+  enqueue(taskId, resolveConflictsPrompt(result.target, result.conflicts));
+  return { ok: false, resolving: true, target: result.target, conflicts: result.conflicts };
+}
+
+function resolveConflictsPrompt(target: string, conflicts: string[]) {
+  return `The user clicked Merge, but your branch conflicts with \`${target}\`, which has moved on since you branched. Conflicting files: ${conflicts.join(', ')}.
+
+Bring your branch up to date in your worktree:
+1. Run \`git merge ${target}\`.
+2. Resolve each conflict so that both your change and the other side's intent survive. To understand the other side, read the "Merge task #N" commits on ${target} that touched these files (\`git log ${target} --merges -- <file>\`); each message says what that task was for.
+3. Run the project's checks (typecheck, tests) and fix anything the merge broke.
+4. Commit the merge.
+
+Then call report_checkpoint with done=true and a one-line summary of how you resolved it; the board will merge your branch automatically. If a conflict needs a product decision (the two sides want different behavior), don't guess: report with done=false and give the user options.`;
+}
+
+/** Called when a conflict-resolving run ends: merge if the agent says it's resolved, otherwise leave it to the user. */
+function continueMerge(taskId: number) {
+  const task = getTask(taskId)!;
+  if (task.merge_state !== 'resolving' || task.status === 'limited') return; // a usage-limited run resumes later
+  const cp = task.checkpoint ? (JSON.parse(task.checkpoint) as Checkpoint) : null;
+  if (task.status !== 'needs_input' || !cp?.done) {
+    updateTask(taskId, { merge_state: null });
+    return;
+  }
+  serialized(() => attemptMerge(taskId))
+    .then((result) => {
+      if (result.ok || 'resolving' in result) return;
+      const files = result.conflicts.length ? `It still conflicts in ${result.conflicts.join(', ')}.` : result.message;
+      const checkpoint: Checkpoint = {
+        summary: `The agent resolved the conflicts, but merging into ${result.target} still fails. ${files}`.slice(0, 350),
+        details: result.message ? `\`\`\`\n${result.message}\n\`\`\`` : undefined,
+        options: [
+          { label: `Merge ${result.target} into your branch again, resolve the conflicts, run the checks and commit.` },
+        ],
+      };
+      updateTask(taskId, { checkpoint: JSON.stringify(checkpoint) });
+    })
+    .catch((err) => {
+      updateTask(taskId, { merge_state: null, status: 'failed', error: `Merge failed: ${String(err?.message ?? err)}` });
+    });
 }
 
 export async function mergeable(taskId: number) {

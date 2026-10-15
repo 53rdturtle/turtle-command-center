@@ -55,7 +55,7 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showMore, setShowMore] = useState(false);
-  const [mergeFailure, setMergeFailure] = useState<Extract<MergeResult, { ok: false }> | null>(null);
+  const [mergeFailure, setMergeFailure] = useState<Extract<MergeResult, { message: string }> | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : task.status;
   // Done cards keep only the closing actions in view; the rest sit behind "⋯".
@@ -65,7 +65,7 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
   const merge = () => run(async () => {
     setMergeFailure(null);
     const result = await api.merge(task.id);
-    if (!result.ok) setMergeFailure(result);
+    if (!result.ok && !('resolving' in result)) setMergeFailure(result);
   });
 
   const resumeCmd = task.sessionId && task.worktree ? `cd "${task.worktree}" && claude --resume ${task.sessionId}` : null;
@@ -85,7 +85,7 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
         </div>
         <span className={`pill pill-${status}`}>
           {status === 'running' && <span className="spinner" />}
-          {task.permissions.length ? 'Permission' : STATUS_LABEL[task.status]}
+          {task.permissions.length ? 'Permission' : task.merging ? 'Merging' : STATUS_LABEL[task.status]}
         </span>
       </header>
 
@@ -97,6 +97,11 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
       </div>
 
       <div className="card-body">
+        {task.merging && (
+          <p className="merging-banner">
+            Merging into {targetBranch ?? 'your branch'}: the agent is resolving conflicts with it first. The board merges once it's done.
+          </p>
+        )}
         {task.permissions.map((p) => <PermissionRequest key={p.id} p={p} />)}
         <Body task={task} children={children} />
       </div>
@@ -296,7 +301,7 @@ function SplitReview({ task }: { task: Task }) {
   );
 }
 
-function MergeFailure({ taskId, failure, onDismiss }: { taskId: number; failure: Extract<MergeResult, { ok: false }>; onDismiss: () => void }) {
+function MergeFailure({ taskId, failure, onDismiss }: { taskId: number; failure: Extract<MergeResult, { message: string }>; onDismiss: () => void }) {
   const { busy, error, run } = useAction();
   const askAgent = () => run(async () => {
     await api.reply(taskId,
@@ -308,7 +313,7 @@ function MergeFailure({ taskId, failure, onDismiss }: { taskId: number; failure:
     <div className="merge-failure">
       {failure.conflicts.length > 0 ? (
         <>
-          <p><strong>Merge conflicts with {failure.target}</strong>. The merge was aborted, so your checkout is unchanged.</p>
+          <p><strong>Merge conflicts with {failure.target}</strong>. Nothing was merged, so your checkout is unchanged.</p>
           <ul>{failure.conflicts.map((f) => <li key={f}><code>{f}</code></li>)}</ul>
           <div className="options">
             <button className="option primary" disabled={busy} onClick={askAgent}>Ask the agent to resolve them</button>

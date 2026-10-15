@@ -27,6 +27,8 @@ export interface Task {
   split: Split | null;
   queuedPrompt: string | null;
   error: string | null;
+  /** The agent is resolving merge conflicts; the board merges when it's done. */
+  merging: boolean;
   retryAt: number | null;
   costUsd: number;
   lastActivity: string | null;
@@ -48,7 +50,9 @@ export interface Project {
 
 export type MergeResult =
   | { ok: true; target: string }
-  | { ok: false; target: string; conflicts: string[]; message: string };
+  | { ok: false; target: string; conflicts: string[]; message: string }
+  /** Conflicts were handed to the task's agent; the merge finishes on its own. */
+  | { ok: false; resolving: true; target: string; conflicts: string[] };
 
 export interface TaskEvent { id: number; task_id: number; ts: number; kind: string; text: string }
 

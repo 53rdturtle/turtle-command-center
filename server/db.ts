@@ -70,6 +70,8 @@ for (const [name, type] of [
   ['run_ref', 'TEXT'], // the live agent process (JSON from AgentRunner.start)
   ['run_offset', 'INTEGER NOT NULL DEFAULT 0'], // bytes of the run's output log already processed
   ['run_prompt', 'TEXT'], // prompt of the current run, for retrying after a usage limit
+  ['merge_state', 'TEXT'], // 'resolving' while the agent resolves merge conflicts; the board then finishes the merge
+  ['merge_attempts', 'INTEGER NOT NULL DEFAULT 0'], // automatic conflict-resolution rounds for the current merge
 ] as const) {
   if (!taskColumns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
 }
@@ -101,6 +103,7 @@ export interface TaskRow {
   pending_prompt: string | null; error: string | null; retry_at: number | null; cost_usd: number;
   created_at: number; updated_at: number;
   rev: number; run_ref: string | null; run_offset: number; run_prompt: string | null;
+  merge_state: 'resolving' | null; merge_attempts: number;
 }
 export interface EventRow { id: number; task_id: number; ts: number; kind: string; text: string }
 export interface PermissionRow {
