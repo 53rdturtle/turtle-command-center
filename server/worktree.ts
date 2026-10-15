@@ -1,8 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
-import { existsSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { DATA_DIR } from './config.ts';
+import type { MergeFailureReason } from './db.ts';
 
 const exec = promisify(execFile);
 
@@ -63,7 +65,11 @@ export async function currentBranch(repo: string) {
   }
 }
 
-export type MergeFailureReason = 'dirty' | 'detached' | 'in_progress' | 'conflicts' | 'error';
+/** Whether merging would bring anything in: commits the checkout lacks, or uncommitted edits (merge commits those first). */
+export async function hasWorkToMerge(repo: string, worktree: string, branch: string) {
+  if ((await git(worktree, 'status', '--porcelain')) !== '') return true;
+  return Number(await git(repo, 'rev-list', '--count', `HEAD..${branch}`)) > 0;
+}
 
 export type MergeResult =
   | { ok: true; target: string }
@@ -98,7 +104,7 @@ async function checkoutBlocker(repo: string): Promise<Omit<Extract<MergeResult, 
 /**
  * Merges a task branch into whatever branch the main checkout is on.
  * Refuses if that checkout is dirty, detached or mid-operation; on conflicts
- * the merge is aborted, leaving the user's checkout as it was.
+ * nothing is merged, leaving the user's checkout as it was.
  */
 export async function mergeTaskBranch(repo: string, worktree: string, branch: string, taskId: number, message: string): Promise<MergeResult> {
   const target = (await currentBranch(repo)) ?? 'HEAD';
@@ -107,6 +113,16 @@ export async function mergeTaskBranch(repo: string, worktree: string, branch: st
   if ((await git(worktree, 'status', '--porcelain')) !== '') {
     await git(worktree, 'add', '-A');
     await git(worktree, 'commit', '-m', `tcc: uncommitted work from task #${taskId}`);
+  }
+  // Find conflicts in memory first. A conflicting `git merge` writes conflict markers into the checkout, and when
+  // the project is this app, that restarts the dev server before the merge can be aborted or reported.
+  try {
+    await git(repo, 'merge-tree', '--write-tree', '--name-only', 'HEAD', branch);
+  } catch (err: any) {
+    // Exit code 1 means conflicts. stdout is the tree id, the conflicted paths, a blank line, then git's messages.
+    if (err.code !== 1) throw err;
+    const [files, messages = ''] = String(err.stdout).split(/\r?\n\r?\n/);
+    return { ok: false, target, reason: 'conflicts', conflicts: files.split(/\r?\n/).slice(1).filter(Boolean), files: [], message: messages.trim() };
   }
   try {
     await git(repo, 'merge', '--no-ff', '-m', message, branch);
@@ -122,7 +138,112 @@ export async function mergeTaskBranch(repo: string, worktree: string, branch: st
   return { ok: true, target };
 }
 
+/** Whether a "Merge task #N" commit made by mergeTaskBranch is in the checkout's history. */
+export async function wasMerged(repo: string, taskId: number) {
+  return (await git(repo, 'log', '-1', '--format=%H', `--grep=^Merge task #${taskId}:`, 'HEAD').catch(() => '')) !== '';
+}
+
+/** Re-creates a task's worktree at its old path from its branch. False if the branch is gone. */
+export async function restoreWorktree(repo: string, path: string, branch: string) {
+  try {
+    await git(repo, 'rev-parse', '--verify', `refs/heads/${branch}`);
+  } catch {
+    return false;
+  }
+  await git(repo, 'worktree', 'prune');
+  await git(repo, 'worktree', 'add', path, branch);
+  return true;
+}
+
 export async function discardWorktree(repo: string, path: string, branch: string) {
   await git(repo, 'worktree', 'remove', '--force', path).catch(() => {});
   await git(repo, 'branch', '-D', branch).catch(() => {});
+}
+
+export interface DiffFile {
+  path: string;
+  oldPath?: string;
+  status: string;
+  additions: number | null;
+  deletions: number | null;
+  /** Unified diff for this file; null when it was cut off by the size cap. */
+  patch: string | null;
+}
+
+export interface TaskDiff {
+  target: string;
+  base: string;
+  files: DiffFile[];
+  additions: number;
+  deletions: number;
+  truncated: boolean;
+}
+
+const DIFF_CAP = 500 * 1024;
+
+/**
+ * What the task changed relative to its merge base with the main checkout's branch,
+ * including uncommitted and untracked files. Untracked files are staged into a throwaway
+ * copy of the index so the agent's real index is never touched.
+ */
+export async function taskDiff(repo: string, worktree: string): Promise<TaskDiff> {
+  if (!existsSync(worktree)) throw new Error(`Worktree ${worktree} no longer exists`);
+  const target = (await currentBranch(repo)) ?? 'HEAD';
+  const targetSha = await git(repo, 'rev-parse', 'HEAD');
+  const base = await git(worktree, 'merge-base', 'HEAD', targetSha);
+
+  const indexPath = resolve(worktree, await git(worktree, 'rev-parse', '--git-path', 'index'));
+  const tmp = mkdtempSync(join(tmpdir(), 'tcc-diff-'));
+  const tmpIndex = join(tmp, 'index');
+  try {
+    if (existsSync(indexPath)) copyFileSync(indexPath, tmpIndex);
+    const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+    const run = async (...args: string[]) =>
+      (await exec('git', ['-C', worktree, ...args], { windowsHide: true, env, maxBuffer: 256 * 1024 * 1024 })).stdout;
+    await run('add', '-A');
+    const diffArgs = ['diff', '--cached', '-M', '--no-color', '--no-ext-diff', base];
+    const [nameStatus, numstat, patch] = await Promise.all([
+      run(...diffArgs, '--name-status', '-z'),
+      run(...diffArgs, '--numstat', '-z'),
+      run(...diffArgs),
+    ]);
+
+    const files: DiffFile[] = [];
+    const ns = nameStatus.split('\0');
+    for (let i = 0; i < ns.length && ns[i]; ) {
+      const status = ns[i++];
+      if (status.startsWith('R') || status.startsWith('C')) files.push({ status: status[0], oldPath: ns[i++], path: ns[i++], additions: null, deletions: null, patch: null });
+      else files.push({ status, path: ns[i++], additions: null, deletions: null, patch: null });
+    }
+    // numstat -z: "add\tdel\tpath\0", or "add\tdel\t\0old\0new\0" for renames; same order as name-status.
+    const nm = numstat.split('\0');
+    for (let i = 0, f = 0; i < nm.length && nm[i] && f < files.length; f++) {
+      const [add, del, path] = nm[i++].split('\t');
+      if (!path) i += 2;
+      files[f].additions = add === '-' ? null : Number(add);
+      files[f].deletions = del === '-' ? null : Number(del);
+    }
+
+    const chunks = patch.split(/^(?=diff --git )/m).filter((c) => c.startsWith('diff --git '));
+    let size = 0;
+    let truncated = false;
+    // Over the cap, skip the oversized file but keep going so smaller files still show.
+    chunks.forEach((chunk, i) => {
+      if (!files[i]) return;
+      if (size + chunk.length > DIFF_CAP) {
+        truncated = true;
+      } else {
+        size += chunk.length;
+        files[i].patch = chunk;
+      }
+    });
+
+    return {
+      target, base, files, truncated,
+      additions: files.reduce((n, f) => n + (f.additions ?? 0), 0),
+      deletions: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
+    };
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }

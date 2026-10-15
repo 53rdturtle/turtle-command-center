@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DATA_DIR } from './config.ts';
+import { DATA_DIR, DEFAULT_MAX_CONCURRENT } from './config.ts';
 
 mkdirSync(DATA_DIR, { recursive: true });
 export const DB_PATH = join(DATA_DIR, 'tcc.db');
@@ -61,7 +61,22 @@ CREATE TABLE IF NOT EXISTS permissions (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pending_permissions ON permissions(task_id, status);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS accounts (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  token TEXT, -- from \`claude setup-token\`; NULL runs on whatever account the CLI is logged in to
+  limited_until INTEGER, -- hit a usage limit; skipped until then
+  created_at INTEGER NOT NULL
+);
 `);
+
+if (!db.prepare('SELECT 1 FROM accounts LIMIT 1').get()) {
+  db.prepare('INSERT INTO accounts (name, token, created_at) VALUES (?, NULL, ?)').run('CLI login', Date.now());
+}
 
 // Columns added after v0.1.
 const taskColumns = new Set((db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[]).map((c) => c.name));
@@ -70,6 +85,13 @@ for (const [name, type] of [
   ['run_ref', 'TEXT'], // the live agent process (JSON from AgentRunner.start)
   ['run_offset', 'INTEGER NOT NULL DEFAULT 0'], // bytes of the run's output log already processed
   ['run_prompt', 'TEXT'], // prompt of the current run, for retrying after a usage limit
+  ['merge_state', 'TEXT'], // place in the merge queue: 'queued', 'merging', or 'resolving' while the agent resolves conflicts
+  ['merge_attempts', 'INTEGER NOT NULL DEFAULT 0'], // automatic conflict-resolution rounds for the current merge
+  ['account_id', 'INTEGER'], // account of the current (or last) run
+  ['merge_queued_at', 'INTEGER'], // when Merge was clicked; the merge queue goes in this order
+  ['merge_failure', 'TEXT'], // why the last merge didn't land (JSON MergeFailure), until dismissed or retried
+  ['context_tokens', 'INTEGER'], // tokens in the session's context as of its latest model call
+  ['context_window', 'INTEGER'], // the model's context window size, reported when a run ends
 ] as const) {
   if (!taskColumns.has(name)) db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
 }
@@ -101,7 +123,15 @@ export interface TaskRow {
   pending_prompt: string | null; error: string | null; retry_at: number | null; cost_usd: number;
   created_at: number; updated_at: number;
   rev: number; run_ref: string | null; run_offset: number; run_prompt: string | null;
+  merge_state: MergeState | null; merge_attempts: number; account_id: number | null;
+  merge_queued_at: number | null; merge_failure: string | null;
+  context_tokens: number | null; context_window: number | null;
 }
+export type MergeState = 'queued' | 'merging' | 'resolving';
+export type MergeFailureReason = 'dirty' | 'detached' | 'in_progress' | 'conflicts' | 'error';
+/** `reason` and `files` are missing on failures stored before they existed. */
+export interface MergeFailure { target: string; reason?: MergeFailureReason; conflicts: string[]; files?: string[]; message: string }
+export interface AccountRow { id: number; name: string; token: string | null; limited_until: number | null; created_at: number }
 export interface EventRow { id: number; task_id: number; ts: number; kind: string; text: string }
 export interface PermissionRow {
   id: string; task_id: number; tool_name: string; input: string;
@@ -144,8 +174,20 @@ export const lastEvent = (taskId: number) =>
   db.prepare(`SELECT * FROM events WHERE task_id = ? AND kind IN ('assistant','tool') ORDER BY id DESC LIMIT 1`)
     .get(taskId) as EventRow | undefined;
 
+/** Accounts in failover order: runs use the first one that isn't cooling down from a usage limit. */
+export const listAccounts = () => db.prepare('SELECT * FROM accounts ORDER BY id').all() as unknown as AccountRow[];
+export const getAccount = (id: number) => db.prepare('SELECT * FROM accounts WHERE id = ?').get(id) as AccountRow | undefined;
+
 export const pendingPermissions = (taskId: number) =>
   db.prepare(`SELECT * FROM permissions WHERE task_id = ? AND status = 'pending' ORDER BY created_at`)
     .all(taskId) as unknown as PermissionRow[];
 export const getPermission = (id: string) =>
   db.prepare('SELECT * FROM permissions WHERE id = ?').get(id) as PermissionRow | undefined;
+
+export function getMaxConcurrent() {
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'max_concurrent'`).get() as { value: string } | undefined;
+  return row ? Number(row.value) : DEFAULT_MAX_CONCURRENT;
+}
+export const saveMaxConcurrent = (n: number) =>
+  db.prepare(`INSERT INTO settings (key, value) VALUES ('max_concurrent', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+    .run(String(n));

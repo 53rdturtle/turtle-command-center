@@ -1,6 +1,6 @@
-import { Component, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { agentDone, api, onStream, type Checkpoint, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
+import { api, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -12,6 +12,12 @@ const STATUS_LABEL: Record<Task['status'], string> = {
   failed: 'Failed',
   done: 'Done',
   discarded: 'Discarded',
+};
+
+const MERGE_LABEL: Record<NonNullable<Task['mergeState']>, string> = {
+  queued: 'Merge queued',
+  merging: 'Merging',
+  resolving: 'Resolving conflicts',
 };
 
 function useAction() {
@@ -31,23 +37,40 @@ function useAction() {
   return { busy, error, run };
 }
 
-export function TaskCard({ task, parent, children, targetBranch }: { task: Task; parent?: Task; children: Task[]; targetBranch: string | null }) {
+/** True when the task branch has work the checkout lacks; rechecked on task updates, branch switches and window focus. */
+function useMergeable(task: Task, targetBranch: string | null) {
+  const eligible = Boolean(task.branch && task.worktree) && !task.mergeState && !['running', 'queued', 'done'].includes(task.status);
+  const [mergeable, setMergeable] = useState(false);
+  useEffect(() => {
+    if (!eligible) return setMergeable(false);
+    let alive = true;
+    // If the check itself fails, show the button and let a merge attempt report the problem.
+    const check = () => api.mergeable(task.id).catch(() => true).then((m) => alive && setMergeable(m));
+    check();
+    addEventListener('focus', check);
+    return () => {
+      alive = false;
+      removeEventListener('focus', check);
+    };
+  }, [eligible, task.id, task.updatedAt, targetBranch]);
+  return eligible && mergeable;
+}
+
+type CardProps = { task: Task; parent?: Task; children: Task[]; targetBranch: string | null; defaultModel: string };
+
+export function TaskCard({ task, parent, children, targetBranch, defaultModel }: CardProps) {
   const [showTranscript, setShowTranscript] = useState(false);
+  const [showChanges, setShowChanges] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [showMore, setShowMore] = useState(false);
-  const [mergeFailure, setMergeFailure] = useState<Extract<MergeResult, { ok: false }> | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : task.status;
-  // Finished cards keep only the closing actions in view; the rest sit behind "⋯".
-  const finished = agentDone(task) || task.status === 'done';
-  const secondary = !finished || showMore;
-  const canMerge = Boolean(task.branch && task.worktree) && !['running', 'queued', 'done'].includes(task.status);
-  const merge = () => run(async () => {
-    setMergeFailure(null);
-    const result = await api.merge(task.id);
-    if (!result.ok) setMergeFailure(result);
-  });
+  const active = task.status === 'running' || task.status === 'queued';
+  const canMerge = useMergeable(task, targetBranch);
+  const hasWorktree = Boolean(task.branch && task.worktree);
+  const diff = useDiff(task, hasWorktree && (showChanges || !['running', 'queued'].includes(task.status)));
+  const merge = () => run(() => api.merge(task.id));
+  const target = targetBranch ?? 'your branch';
 
   const resumeCmd = task.sessionId && task.worktree ? `cd "${task.worktree}" && claude --resume ${task.sessionId}` : null;
   const copyResume = async () => {
@@ -57,82 +80,152 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
     setTimeout(() => setCopied(false), 1500);
   };
 
+  // Branch, account and cost are reference info, so they live in the #id tooltip rather than a chip each.
+  const info = [
+    task.branch && `Branch: ${task.branch}`,
+    task.account && `Account: ${task.account}`,
+    task.costUsd > 0 && `≈$${task.costUsd.toFixed(2)} equivalent API cost (counts against subscription usage)`,
+  ].filter(Boolean).join('\n');
+  const hasDiff = Boolean(diff.data && diff.data.files.length > 0);
+
+  // One primary action per card; everything else sits in the "⋯" menu.
+  const primary: { label: string; run: () => Promise<unknown>; title?: string; quiet?: boolean } | null =
+    active ? { label: 'Stop', run: () => api.stop(task.id), quiet: true }
+    : task.mergeState === 'queued' ? { label: 'Remove from merge queue', run: () => api.cancelMerge(task.id), quiet: true }
+    : task.mergeState === 'merging' ? null
+    : task.status === 'failed' || task.status === 'limited' ? { label: 'Retry now', run: () => api.retry(task.id) }
+    : canMerge ? { label: `Merge into ${targetBranch ?? 'current branch'}`, run: merge, title: `Merge ${task.branch} into the branch checked out in your repo`, quiet: !task.checkpoint?.done }
+    : task.status !== 'done' ? { label: 'Mark done', run: () => api.done(task.id), title: 'Keep the branch, remove the worktree', quiet: !task.checkpoint?.done }
+    : null;
+  // Mark done moves to the menu whenever another action takes the primary slot.
+  const doneInMenu = !active && task.status !== 'done' && task.mergeState !== 'merging' && primary?.label !== 'Mark done';
+
   return (
     <article className={`card status-${status}`}>
       <header className="card-head">
         <div className="card-title">
-          <span className="task-id">#{task.id}</span>
+          <span className="task-id" title={info || undefined}>#{task.id}</span>
           <h3>{task.title}</h3>
         </div>
         <span className={`pill pill-${status}`}>
-          {status === 'running' && <span className="spinner" />}
-          {task.permissions.length ? 'Permission' : STATUS_LABEL[task.status]}
+          {(status === 'running' || task.mergeState === 'merging') && <span className="spinner" />}
+          {task.permissions.length ? 'Permission' : task.mergeState ? MERGE_LABEL[task.mergeState] : STATUS_LABEL[task.status]}
         </span>
       </header>
 
       <div className="meta">
         {parent && <span className="chip">↳ from #{parent.id} {parent.title}</span>}
-        <span className="chip">{task.model}</span>
-        {task.branch && <span className="chip mono">{task.branch}</span>}
-        {task.costUsd > 0 && <span className="chip" title="Equivalent API cost; on a subscription this counts against usage limits">≈${task.costUsd.toFixed(2)}</span>}
+        {task.model !== defaultModel && <span className="chip" title="Differs from the project's default model">{task.model}</span>}
+        {hasDiff && diff.data && (
+          <button className="chip chip-button mono" onClick={() => setShowChanges((s) => !s)} title={`${showChanges ? 'Hide' : 'Show'} changes relative to ${diff.data.target}`}>
+            {showChanges ? '▾' : '▸'} <span className="add">+{diff.data.additions}</span> <span className="del">−{diff.data.deletions}</span> · {diff.data.files.length} file{diff.data.files.length === 1 ? '' : 's'}
+          </button>
+        )}
+        <ContextChip task={task} />
       </div>
 
       <div className="card-body">
+        {task.mergeState === 'queued' && (
+          <p className="merging-banner">
+            {task.mergePosition === 1 ? 'Next' : `#${task.mergePosition}`} in line to merge into {target}. Merges land one at a time.
+          </p>
+        )}
+        {task.mergeState === 'merging' && <p className="merging-banner">Merging into {target}…</p>}
+        {task.mergeState === 'resolving' && (
+          <p className="merging-banner">
+            Merging into {target}: the agent is resolving conflicts with it first. It rejoins the merge queue once it's done.
+          </p>
+        )}
         {task.permissions.map((p) => <PermissionRequest key={p.id} p={p} />)}
         <Body task={task} children={children} />
       </div>
 
-      {mergeFailure && <MergeFailure taskId={task.id} failure={mergeFailure} onDismiss={() => setMergeFailure(null)} />}
+      {task.mergeFailure && <MergeFailureNotice taskId={task.id} failure={task.mergeFailure} />}
       {error && <p className="error">{error}</p>}
 
       <footer className="card-actions">
-        {secondary && (
-          <button className="ghost" onClick={() => setShowTranscript((s) => !s)}>
-            {showTranscript ? 'Hide transcript' : 'Transcript'}
-          </button>
-        )}
-        {secondary && resumeCmd && (
-          <button className="ghost" disabled={busy} onClick={() => run(() => api.openTerminal(task.id))} title={task.status === 'running' ? 'Stops the agent and continues the session in a new terminal window' : 'Continue the session in a new terminal window'}>
-            Open in terminal
-          </button>
-        )}
-        {secondary && resumeCmd && (
-          <button className="ghost" onClick={copyResume} title={resumeCmd}>
-            {copied ? 'Copied ✓' : 'Copy resume cmd'}
-          </button>
-        )}
-        <span className="spacer" />
-        {(task.status === 'running' || task.status === 'queued' || task.status === 'limited') && (
-          <button className="ghost" disabled={busy} onClick={() => run(() => api.stop(task.id))}>Stop</button>
-        )}
-        {(task.status === 'failed' || task.status === 'limited') && (
-          <button className="ghost" disabled={busy} onClick={() => run(() => api.retry(task.id))}>Retry now</button>
-        )}
-        {canMerge && (
-          <button className={task.checkpoint?.done ? '' : 'ghost'} disabled={busy} onClick={merge} title={`Merge ${task.branch} into the branch checked out in your repo`}>
-            Merge into {targetBranch ?? 'current branch'}
-          </button>
-        )}
-        {task.status !== 'done' && (
-          <button className="ghost" disabled={busy} onClick={() => run(() => api.done(task.id))} title="Keep the branch, remove the worktree">Mark done</button>
-        )}
-        {!secondary ? null : confirmDiscard ? (
+        {confirmDiscard ? (
           <>
-            <button className="danger" disabled={busy} onClick={() => run(() => api.discard(task.id))}>Discard work + branch</button>
+            <span className="confirm-text muted">Delete this task's work and branch?</span>
+            <span className="spacer" />
             <button className="ghost" onClick={() => setConfirmDiscard(false)}>Cancel</button>
+            <button className="danger" disabled={busy} onClick={() => run(() => api.discard(task.id))}>Discard work + branch</button>
           </>
         ) : (
-          <button className="ghost" onClick={() => setConfirmDiscard(true)}>Discard</button>
-        )}
-        {finished && (
-          <button className="ghost" onClick={() => setShowMore((m) => !m)} title={showMore ? 'Fewer actions' : 'Transcript, terminal, discard…'}>
-            {showMore ? '×' : '⋯'}
-          </button>
+          <>
+            <span className="spacer" />
+            <Menu>
+              <MenuItem onClick={() => setShowTranscript((s) => !s)}>{showTranscript ? 'Hide transcript' : 'Transcript'}</MenuItem>
+              {/* With a diff, the "+N −M" chip toggles changes; this covers running tasks and empty diffs. */}
+              {hasWorktree && !hasDiff && (
+                <MenuItem onClick={() => setShowChanges((s) => !s)}>{showChanges ? 'Hide changes' : 'Changes'}</MenuItem>
+              )}
+              {resumeCmd && (
+                <MenuItem disabled={busy} onClick={() => run(() => api.openTerminal(task.id))} title={task.status === 'running' ? 'Stops the agent and continues the session in a new terminal window' : 'Continue the session in a new terminal window'}>
+                  Open in terminal
+                </MenuItem>
+              )}
+              {resumeCmd && <MenuItem onClick={copyResume} title={resumeCmd}>{copied ? 'Copied ✓' : 'Copy resume command'}</MenuItem>}
+              {task.status === 'limited' && <MenuItem disabled={busy} onClick={() => run(() => api.stop(task.id))}>Stop</MenuItem>}
+              {doneInMenu && (
+                <MenuItem disabled={busy} onClick={() => run(() => api.done(task.id))} title="Keep the branch, remove the worktree">Mark done</MenuItem>
+              )}
+              <MenuItem danger onClick={() => setConfirmDiscard(true)}>Discard…</MenuItem>
+            </Menu>
+            {primary && (
+              <button className={primary.quiet ? 'ghost' : ''} disabled={busy} onClick={() => run(primary.run)} title={primary.title}>
+                {primary.label}
+              </button>
+            )}
+          </>
         )}
       </footer>
 
+      {showChanges && <Changes diff={diff} onRefresh={diff.reload} />}
       {showTranscript && <Transcript taskId={task.id} />}
     </article>
+  );
+}
+
+/** A "⋯" button with a small dropdown; closes on outside click, Escape, or picking an item. */
+function Menu({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => ref.current?.contains(e.target as Node) || setOpen(false);
+    const onKey = (e: globalThis.KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    addEventListener('mousedown', onDown);
+    addEventListener('keydown', onKey);
+    return () => {
+      removeEventListener('mousedown', onDown);
+      removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  return (
+    <div className="menu" ref={ref}>
+      <button className="ghost" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)} title="More actions">⋯</button>
+      {open && <div className="menu-list" role="menu" onClick={() => setOpen(false)}>{children}</div>}
+    </div>
+  );
+}
+
+function MenuItem({ danger, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean }) {
+  return <button role="menuitem" className={danger ? 'menu-item danger-text' : 'menu-item'} {...props} />;
+}
+
+const kTokens = (n: number) => (n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
+
+/** How full the session's context is; the window size is only known once a run has finished. */
+function ContextChip({ task }: { task: Task }) {
+  const { contextTokens: used, contextWindow: size } = task;
+  if (!used) return null;
+  if (!size) return <span className="chip" title="Tokens in the session's context">Context {kTokens(used)}</span>;
+  const pct = Math.round((used / size) * 100);
+  return (
+    <span className={`chip${pct >= 80 ? ' chip-warn' : ''}`} title={`${kTokens(used)} of ${kTokens(size)} tokens. The CLI compacts the conversation when it gets close to full.`}>
+      Context {pct}%
+    </span>
   );
 }
 
@@ -145,7 +238,7 @@ function Body({ task, children }: { task: Task; children: Task[] }) {
     case 'limited':
       return (
         <p className="muted">
-          Hit a usage limit. Retrying automatically at {task.retryAt ? new Date(task.retryAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'soon'}.
+          {task.account ? 'Every account hit its usage limit.' : 'Hit a usage limit.'} Retrying automatically at {task.retryAt ? new Date(task.retryAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'soon'}.
         </p>
       );
     case 'failed':
@@ -188,14 +281,11 @@ function Summary({ checkpoint }: { checkpoint: Checkpoint }) {
 function QuickReply({ task }: { task: Task }) {
   const cp = task.checkpoint!;
   const { busy, error, run } = useAction();
-  const [followUp, setFollowUp] = useState(false);
-  const showReply = !cp.done || followUp;
   return (
     <div>
       {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
       <Summary checkpoint={cp} />
-      {cp.done && <button className="link" onClick={() => setFollowUp((f) => !f)}>{followUp ? 'Hide follow-up' : 'Follow up…'}</button>}
-      {showReply && cp.options.length > 0 && (
+      {cp.options.length > 0 && (
         <div className="options">
           {cp.options.map((o, i) => (
             <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={() => run(() => api.reply(task.id, o.label))}>
@@ -206,7 +296,7 @@ function QuickReply({ task }: { task: Task }) {
         </div>
       )}
       {error && <p className="error">{error}</p>}
-      {showReply && <ReplyBox taskId={task.id} />}
+      <ReplyBox taskId={task.id} />
     </div>
   );
 }
@@ -280,34 +370,35 @@ function SplitReview({ task }: { task: Task }) {
   );
 }
 
-function MergeFailure({ taskId, failure, onDismiss }: { taskId: number; failure: Extract<MergeResult, { ok: false }>; onDismiss: () => void }) {
+function MergeFailureNotice({ taskId, failure }: { taskId: number; failure: MergeFailure }) {
   const { busy, error, run } = useAction();
-  const askAgent = () => run(async () => {
-    await api.reply(taskId,
-      `Merging into \`${failure.target}\` conflicts in: ${failure.conflicts.join(', ')}. ` +
-      `Run \`git merge ${failure.target}\` in your worktree, resolve the conflicts, run any relevant checks, commit, and report back.`);
-    onDismiss();
-  });
-  const dismiss = <button className="option" onClick={onDismiss}>Dismiss</button>;
+  // Replying also clears the failure.
+  const askAgent = () => run(() => api.reply(taskId,
+    `Merging into \`${failure.target}\` conflicts in: ${failure.conflicts.join(', ')}. ` +
+    `Run \`git merge ${failure.target}\` in your worktree, resolve the conflicts, run any relevant checks, commit, and report back.`));
+  const onDismiss = () => run(() => api.dismissMergeFailure(taskId));
+  const dismiss = <button className="option" disabled={busy} onClick={onDismiss}>Dismiss</button>;
+  // Failures stored before `reason` existed only tell conflicts apart by their file list.
+  const reason = failure.reason ?? (failure.conflicts.length ? 'conflicts' : 'error');
   return (
     <div className="merge-failure">
-      {failure.reason === 'conflicts' ? (
+      {reason === 'conflicts' ? (
         <>
-          <p><strong>Merge conflicts with {failure.target}</strong>. The merge was aborted, so your checkout is unchanged.</p>
+          <p><strong>Merge conflicts with {failure.target}</strong>. Nothing was merged, so your checkout is unchanged.</p>
           <ul>{failure.conflicts.map((f) => <li key={f}><code>{f}</code></li>)}</ul>
           <div className="options">
             <button className="option primary" disabled={busy} onClick={askAgent}>Ask the agent to resolve them</button>
             {dismiss}
           </div>
         </>
-      ) : failure.reason === 'dirty' ? (
+      ) : reason === 'dirty' ? (
         <>
           <p><strong>Your checkout of {failure.target} has uncommitted changes</strong>, so nothing was merged.
             Commit or stash them (<code>git stash</code>), then merge again.</p>
-          <ul>{failure.files.map((f) => <li key={f}><code>{f}</code></li>)}</ul>
+          <ul>{(failure.files ?? []).map((f) => <li key={f}><code>{f}</code></li>)}</ul>
           <div className="options">{dismiss}</div>
         </>
-      ) : failure.reason === 'detached' || failure.reason === 'in_progress' ? (
+      ) : reason === 'detached' || reason === 'in_progress' ? (
         <>
           <p><strong>Couldn't merge.</strong> {failure.message} Nothing was changed.</p>
           <div className="options">{dismiss}</div>
@@ -374,6 +465,89 @@ function Transcript({ taskId }: { taskId: number }) {
         </div>
       ))}
     </div>
+  );
+}
+
+type DiffState = { data: TaskDiff | null; error: string | null; loading: boolean; reload: () => void };
+
+/** Loads the task's diff, refreshing whenever the task updates (new commits, checkpoints). */
+function useDiff(task: Task, enabled: boolean): DiffState {
+  const [data, setData] = useState<TaskDiff | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    setLoading(true);
+    api.diff(task.id)
+      .then((d) => alive && (setData(d), setError(null)))
+      .catch((e) => alive && setError((e as Error).message))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [task.id, task.updatedAt, enabled, nonce]);
+  return { data, error, loading, reload: () => setNonce((n) => n + 1) };
+}
+
+function Changes({ diff, onRefresh }: { diff: DiffState; onRefresh: () => void }) {
+  const { data, error, loading } = diff;
+  return (
+    <div className="changes">
+      <div className="changes-head">
+        {data ? (
+          <span className="muted">
+            {data.files.length} file{data.files.length === 1 ? '' : 's'} changed vs <code>{data.target}</code>
+            {' '}(<span className="add">+{data.additions}</span> <span className="del">−{data.deletions}</span>), including uncommitted work
+          </span>
+        ) : <span className="muted">{loading ? 'Loading changes…' : ''}</span>}
+        <span className="spacer" />
+        <button className="ghost small" disabled={loading} onClick={onRefresh}>{loading ? 'Loading…' : 'Refresh'}</button>
+      </div>
+      {error && <p className="error">{error}</p>}
+      {data && data.files.length === 0 && <p className="muted">No changes yet.</p>}
+      {data?.truncated && <p className="warn-note">The diff is large, so some files' contents are omitted below. Open the worktree to see everything.</p>}
+      {data?.files.map((f) => <FileDiff key={f.path} file={f} defaultOpen={data.files.length <= 10 && (f.patch?.length ?? 0) < 40_000} />)}
+    </div>
+  );
+}
+
+const FILE_STATUS: Record<string, string> = { A: 'added', D: 'deleted', M: 'modified', R: 'renamed', C: 'copied', T: 'type changed' };
+
+function FileDiff({ file, defaultOpen }: { file: DiffFile; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="diff-file">
+      <button className="diff-file-head" onClick={() => setOpen((o) => !o)}>
+        <span className="caret">{open ? '▾' : '▸'}</span>
+        <span className={`diff-status st-${file.status}`} title={FILE_STATUS[file.status] ?? file.status}>{file.status}</span>
+        <span className="mono diff-path">{file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}</span>
+        <span className="mono diff-counts">
+          {file.additions === null ? 'binary' : <><span className="add">+{file.additions}</span> <span className="del">−{file.deletions}</span></>}
+        </span>
+      </button>
+      {open && (file.patch === null
+        ? <p className="muted diff-omitted">Omitted (diff too large).</p>
+        : <DiffLines patch={file.patch} />)}
+    </div>
+  );
+}
+
+function DiffLines({ patch }: { patch: string }) {
+  // Skip the git header (diff --git / index / --- / +++); hunks start at the first "@@".
+  const lines = patch.split('\n');
+  const start = lines.findIndex((l) => l.startsWith('@@'));
+  if (start < 0) return <p className="muted diff-omitted">{/^Binary files/m.test(patch) ? 'Binary file.' : 'No content changes.'}</p>;
+  const body = lines.slice(start);
+  if (body[body.length - 1] === '') body.pop();
+  return (
+    <pre className="diff-lines">
+      {body.map((l, i) => {
+        const cls = l.startsWith('@@') ? 'hunk' : l[0] === '+' ? 'add' : l[0] === '-' ? 'del' : l[0] === '\\' ? 'note' : '';
+        return <div key={i} className={`dl ${cls}`}>{l || ' '}</div>;
+      })}
+    </pre>
   );
 }
 
