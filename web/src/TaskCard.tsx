@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { api, onStream, type Checkpoint, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
+import { api, onStream, type Checkpoint, type DiffFile, type MergeResult, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -52,6 +52,7 @@ function useMergeable(task: Task, targetBranch: string | null) {
 
 export function TaskCard({ task, parent, children, targetBranch }: { task: Task; parent?: Task; children: Task[]; targetBranch: string | null }) {
   const [showTranscript, setShowTranscript] = useState(false);
+  const [showChanges, setShowChanges] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showMore, setShowMore] = useState(false);
@@ -62,6 +63,8 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
   const finished = task.status === 'done';
   const secondary = !finished || showMore;
   const canMerge = useMergeable(task, targetBranch);
+  const hasWorktree = Boolean(task.branch && task.worktree);
+  const diff = useDiff(task, hasWorktree && (showChanges || !['running', 'queued'].includes(task.status)));
   const merge = () => run(async () => {
     setMergeFailure(null);
     const result = await api.merge(task.id);
@@ -93,6 +96,11 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
         {parent && <span className="chip">↳ from #{parent.id} {parent.title}</span>}
         <span className="chip">{task.model}</span>
         {task.branch && <span className="chip mono">{task.branch}</span>}
+        {diff.data && diff.data.files.length > 0 && (
+          <button className="chip chip-button mono" onClick={() => setShowChanges(true)} title={`Changes relative to ${diff.data.target}`}>
+            <span className="add">+{diff.data.additions}</span> <span className="del">−{diff.data.deletions}</span> · {diff.data.files.length} file{diff.data.files.length === 1 ? '' : 's'}
+          </button>
+        )}
         {task.costUsd > 0 && <span className="chip" title="Equivalent API cost; on a subscription this counts against usage limits">≈${task.costUsd.toFixed(2)}</span>}
       </div>
 
@@ -113,6 +121,11 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
         {secondary && (
           <button className="ghost" onClick={() => setShowTranscript((s) => !s)}>
             {showTranscript ? 'Hide transcript' : 'Transcript'}
+          </button>
+        )}
+        {hasWorktree && (
+          <button className="ghost" onClick={() => setShowChanges((s) => !s)} title="What this task changed, relative to the branch it would merge into">
+            {showChanges ? 'Hide changes' : 'Changes'}
           </button>
         )}
         {secondary && resumeCmd && (
@@ -155,6 +168,7 @@ export function TaskCard({ task, parent, children, targetBranch }: { task: Task;
         )}
       </footer>
 
+      {showChanges && <Changes diff={diff} onRefresh={diff.reload} />}
       {showTranscript && <Transcript taskId={task.id} />}
     </article>
   );
@@ -382,6 +396,89 @@ function Transcript({ taskId }: { taskId: number }) {
         </div>
       ))}
     </div>
+  );
+}
+
+type DiffState = { data: TaskDiff | null; error: string | null; loading: boolean; reload: () => void };
+
+/** Loads the task's diff, refreshing whenever the task updates (new commits, checkpoints). */
+function useDiff(task: Task, enabled: boolean): DiffState {
+  const [data, setData] = useState<TaskDiff | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    setLoading(true);
+    api.diff(task.id)
+      .then((d) => alive && (setData(d), setError(null)))
+      .catch((e) => alive && setError((e as Error).message))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [task.id, task.updatedAt, enabled, nonce]);
+  return { data, error, loading, reload: () => setNonce((n) => n + 1) };
+}
+
+function Changes({ diff, onRefresh }: { diff: DiffState; onRefresh: () => void }) {
+  const { data, error, loading } = diff;
+  return (
+    <div className="changes">
+      <div className="changes-head">
+        {data ? (
+          <span className="muted">
+            {data.files.length} file{data.files.length === 1 ? '' : 's'} changed vs <code>{data.target}</code>
+            {' '}(<span className="add">+{data.additions}</span> <span className="del">−{data.deletions}</span>), including uncommitted work
+          </span>
+        ) : <span className="muted">{loading ? 'Loading changes…' : ''}</span>}
+        <span className="spacer" />
+        <button className="ghost small" disabled={loading} onClick={onRefresh}>{loading ? 'Loading…' : 'Refresh'}</button>
+      </div>
+      {error && <p className="error">{error}</p>}
+      {data && data.files.length === 0 && <p className="muted">No changes yet.</p>}
+      {data?.truncated && <p className="warn-note">The diff is large, so some files' contents are omitted below. Open the worktree to see everything.</p>}
+      {data?.files.map((f) => <FileDiff key={f.path} file={f} defaultOpen={data.files.length <= 10 && (f.patch?.length ?? 0) < 40_000} />)}
+    </div>
+  );
+}
+
+const FILE_STATUS: Record<string, string> = { A: 'added', D: 'deleted', M: 'modified', R: 'renamed', C: 'copied', T: 'type changed' };
+
+function FileDiff({ file, defaultOpen }: { file: DiffFile; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="diff-file">
+      <button className="diff-file-head" onClick={() => setOpen((o) => !o)}>
+        <span className="caret">{open ? '▾' : '▸'}</span>
+        <span className={`diff-status st-${file.status}`} title={FILE_STATUS[file.status] ?? file.status}>{file.status}</span>
+        <span className="mono diff-path">{file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}</span>
+        <span className="mono diff-counts">
+          {file.additions === null ? 'binary' : <><span className="add">+{file.additions}</span> <span className="del">−{file.deletions}</span></>}
+        </span>
+      </button>
+      {open && (file.patch === null
+        ? <p className="muted diff-omitted">Omitted (diff too large).</p>
+        : <DiffLines patch={file.patch} />)}
+    </div>
+  );
+}
+
+function DiffLines({ patch }: { patch: string }) {
+  // Skip the git header (diff --git / index / --- / +++); hunks start at the first "@@".
+  const lines = patch.split('\n');
+  const start = lines.findIndex((l) => l.startsWith('@@'));
+  if (start < 0) return <p className="muted diff-omitted">{/^Binary files/m.test(patch) ? 'Binary file.' : 'No content changes.'}</p>;
+  const body = lines.slice(start);
+  if (body[body.length - 1] === '') body.pop();
+  return (
+    <pre className="diff-lines">
+      {body.map((l, i) => {
+        const cls = l.startsWith('@@') ? 'hunk' : l[0] === '+' ? 'add' : l[0] === '-' ? 'del' : l[0] === '\\' ? 'note' : '';
+        return <div key={i} className={`dl ${cls}`}>{l || ' '}</div>;
+      })}
+    </pre>
   );
 }
 

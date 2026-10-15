@@ -9,7 +9,7 @@ import {
 import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { openResumeTerminal } from './openTerminal.ts';
 import {
-  createWorktree, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, wasMerged,
+  createWorktree, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff, wasMerged,
   type MergeResult,
 } from './worktree.ts';
 
@@ -466,6 +466,13 @@ export async function mergeable(taskId: number) {
   if (!task) throw new Error('Task not found');
   if (!task.branch || !task.worktree || !existsSync(task.worktree)) return false;
   return hasWorkToMerge(getProject(task.project_id)!.path, task.worktree, task.branch);
+}
+
+export async function diff(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (!task.branch || !task.worktree) throw new Error('This task has no worktree to diff');
+  return taskDiff(getProject(task.project_id)!.path, task.worktree);
 }
 
 export async function discard(taskId: number) {

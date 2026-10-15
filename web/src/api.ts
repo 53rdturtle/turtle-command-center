@@ -54,6 +54,18 @@ export type MergeResult =
   /** Conflicts were handed to the task's agent; the merge finishes on its own. */
   | { ok: false; resolving: true; target: string; conflicts: string[] };
 
+export interface DiffFile {
+  path: string;
+  oldPath?: string;
+  status: string;
+  additions: number | null;
+  deletions: number | null;
+  /** null when cut off by the server's size cap */
+  patch: string | null;
+}
+
+export interface TaskDiff { target: string; base: string; files: DiffFile[]; additions: number; deletions: number; truncated: boolean }
+
 export interface TaskEvent { id: number; task_id: number; ts: number; kind: string; text: string }
 
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -78,6 +90,7 @@ export const api = {
   createTask: (slug: string, t: { title: string; description: string; model: string }) =>
     call<Task>('POST', `/api/projects/${slug}/tasks`, t),
   events: (id: number) => call<TaskEvent[]>('GET', `/api/tasks/${id}/events`),
+  diff: (id: number) => call<TaskDiff>('GET', `/api/tasks/${id}/diff`),
   reply: (id: number, text: string) => call('POST', `/api/tasks/${id}/reply`, { text }),
   approveSplit: (id: number, subtasks: Subtask[]) => call('POST', `/api/tasks/${id}/split/approve`, { subtasks }),
   stop: (id: number) => call('POST', `/api/tasks/${id}/stop`),
