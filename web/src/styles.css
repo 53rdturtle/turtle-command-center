@@ -81,7 +81,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 code, pre, .mono { font-family: var(--mono); font-size: 12.5px; }
 pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 
-.app { max-width: 920px; margin: 0 auto; padding: 0 16px 64px; }
+.app { max-width: 1400px; margin: 0 auto; padding: 0 16px 64px; }
 
 .topbar {
   display: flex;
@@ -120,6 +120,11 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .new-task { padding: 10px; display: grid; gap: 8px; margin: 4px 0 20px; }
 .new-task-row { display: flex; gap: 8px; }
 .new-task-row select { width: auto; }
+
+.columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
+.column { min-width: 0; }
+.column-title { font-size: 16px; margin: 0 0 14px; padding-bottom: 8px; border-bottom: 2px solid var(--border); }
+@media (max-width: 900px) { .columns { grid-template-columns: 1fr; } }
 
 .section { margin-bottom: 24px; }
 .section h2, .section-toggle {
