@@ -10,6 +10,7 @@ import {
 } from './db.ts';
 import { CliRunner, type AccountUsage, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { openResumeTerminal, openShellTerminal } from './openTerminal.ts';
+import { findBrowser } from './browser.ts';
 import { cleanupTaskImages, sweepImages } from './images.ts';
 import {
   createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff,
@@ -152,7 +153,7 @@ function subtaskCounts(taskId: number) {
 
 // ---------- agent instructions ----------
 
-function systemPrompt(task: TaskRow) {
+function systemPrompt(task: TaskRow, project: ProjectRow) {
   return `You were dispatched from Turtle Command Center, a board where the user supervises several agents at once. The user does NOT read your transcript; they only see what you report through the command-center tools.
 
 Rules:
@@ -167,7 +168,16 @@ Rules:
 - If the task is clearly too big for one session, with parts that can proceed independently in parallel, call propose_split with self-contained subtask prompts instead of report_checkpoint.
 - Likewise, when your findings are a list of independent changes or suggestions (e.g. "what could be improved?"), don't bundle them into batches inside a checkpoint: call propose_split with one subtask per change, at most 6, most valuable first, and mark the ones you'd do as recommended. The user ticks which to create. Lower-value ideas go in the rationale, one line each under "Also considered".
 - Keep checkpoints short: at most a handful of suggestions, and one line per item in details rather than a paragraph each.
-- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board already shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, so a done checkpoint's options are only for optional follow-up work; an empty list is fine.`;
+${testingRule(project)}
+- When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board already shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, so a done checkpoint's options are only for optional follow-up work (don't mark any of them "(Recommended)"); an empty list is fine.`;
+}
+
+/** How to run and look at the agent's own copy of the app, so it can check a change instead of only typechecking it. */
+function testingRule(project: ProjectRow) {
+  const tryCommand = project.try_command?.trim();
+  const browser = findBrowser();
+  return `- Before calling a change working, try it in a running copy when you can, and say in details what you actually exercised. ${tryCommand ? `This project starts with \`${tryCommand}\`` : 'This project has no Try command set; work out from the repo how to start it'} (run it in the background from your worktree). Your environment has free ports in TCC_PORT and TCC_DEV_PORT and a scratch data dir in TCC_DATA_DIR; Turtle Command Center itself reads these, so a copy of it you start never touches the user's board. For other apps, pass those ports yourself. Stop every process you started before you end your turn, with its whole tree (on Windows \`taskkill /PID <pid> /T /F\`; watchers like \`node --watch\` restart a server killed on its own).${browser ? `
+- To look at a page, take a screenshot with headless ${/edge/i.test(browser) ? 'Edge' : 'Chrome'} and open the PNG with Read: \`"${browser}" --headless=new --disable-gpu --user-data-dir=<new temp dir> --window-size=1280,900 --timeout=3000 --screenshot=<temp dir>/shot.png <url>\`. Always pass a fresh --user-data-dir so it never attaches to the user's open browser (and not --virtual-time-budget: it hangs on pages that hold a stream open). Keep screenshots out of the worktree; create any data the page needs through the app's API first.` : ''}`;
 }
 
 function initialPrompt(task: TaskRow) {
@@ -306,8 +316,13 @@ async function start(task: TaskRow, account: AccountRow) {
     model: fresh.model,
     permissionMode: project.permission_mode,
     dbPath: DB_PATH,
-    systemPrompt: systemPrompt(fresh),
+    systemPrompt: systemPrompt(fresh, project),
     oauthToken: account.token,
+    env: {
+      TCC_PORT: String(await freePort()),
+      TCC_DEV_PORT: String(await freePort()),
+      TCC_DATA_DIR: agentDataDir(task.id),
+    },
   });
   updateTask(task.id, { session_id: sessionId, pending_prompt: null, run_prompt: prompt, run_ref: JSON.stringify(ref), run_offset: 0 });
   addEvent(task.id, 'user', prompt);
@@ -730,12 +745,16 @@ function freePort() {
 }
 
 const tryDataDir = (taskId: number) => join(DATA_DIR, 'try', String(taskId));
+// Separate from the "Try it" sandbox, so the agent's copy and the user's never run schedulers on one database.
+const agentDataDir = (taskId: number) => join(DATA_DIR, 'try', `${taskId}-agent`);
 
 /** Best effort: a sandbox that is still running keeps its database open. */
 function removeTryData(taskId: number) {
-  try {
-    rmSync(tryDataDir(taskId), { recursive: true, force: true });
-  } catch {}
+  for (const dir of [tryDataDir(taskId), agentDataDir(taskId)]) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
 }
 
 /**
@@ -770,7 +789,7 @@ export function retry(taskId: number) {
 const isFinished = (t: TaskRow) => t.status === 'done' || t.status === 'discarded';
 
 /**
- * Sets a final status and drops the task's "Try it" sandbox. When that finishes the last open subtask of a parent, the parent is queued
+ * Sets a final status and drops the task's "Try it" and agent sandboxes. When that finishes the last open subtask of a parent, the parent is queued
  * again to integrate the pieces. The check runs synchronously around the write, so concurrent calls
  * wake the parent exactly once per batch.
  */

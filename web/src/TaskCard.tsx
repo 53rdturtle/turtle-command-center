@@ -322,10 +322,12 @@ function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActio
     <div>
       {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
       <Summary checkpoint={cp} />
+      {/* On a finished task the options are extra work the agent could do, so none is highlighted. */}
+      {options.length > 0 && cp.done && <p className="options-label">Optional follow-ups (nothing more is needed):</p>}
       {options.length > 0 && (
-        <div className="options">
+        <div className={cp.done ? 'options follow-ups' : 'options'}>
           {options.map((o, i) => (
-            <button key={i} className={i === 0 ? 'option primary' : 'option'} disabled={busy} onClick={o.onClick!}>
+            <button key={i} className={i === 0 && !cp.done ? 'option primary' : 'option'} disabled={busy} onClick={o.onClick!}>
               <span>{o.label}</span>
               {o.detail && <small>{o.detail}</small>}
             </button>
