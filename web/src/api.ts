@@ -33,6 +33,10 @@ export interface Task {
   merging: boolean;
   retryAt: number | null;
   costUsd: number;
+  /** Tokens in the session's context as of its latest model call. */
+  contextTokens: number | null;
+  /** The model's context window; known once a run has finished. */
+  contextWindow: number | null;
   lastActivity: string | null;
   permissions: Permission[];
   createdAt: number;
