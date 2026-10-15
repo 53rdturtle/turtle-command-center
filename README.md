@@ -25,7 +25,9 @@ npm run stable   # creates/updates ../TurtleCommandCenter-stable at this checkou
 cd ../TurtleCommandCenter-stable && npm start   # http://localhost:7777, your real data in ~/.turtle-cc
 ```
 
-Rerun `npm run stable` and restart that server whenever you want to pick up merged changes.
+After that, the board shows **Update board (N new)** in its header whenever tasks have been merged into this
+checkout. Clicking it lets a running merge finish (queued merges wait), moves the stable copy to this checkout's
+HEAD, installs and builds, restarts, and reloads the page. If the install or build fails, it rolls back and says so.
 
 For UI development, `npm run dev` here and open http://localhost:5173. Dev mode uses its own API port (7778) and data
 (`~/.turtle-cc-dev`), so it never shares a database with the stable board.
