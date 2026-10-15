@@ -248,3 +248,6 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 
 .crash { max-width: 900px; margin: 40px auto; padding: 0 16px; }
 .crash pre { white-space: pre-wrap; font-size: 12px; background: var(--surface); border: 1px solid var(--border); padding: 12px; border-radius: 8px; }
+button.link { background: none; border: none; padding: 0; color: var(--accent); font-size: 12px; cursor: pointer; }
+button.link:hover { text-decoration: underline; }
+.summary .details { margin-top: 6px; padding: 8px 10px; border-left: 2px solid var(--border); color: var(--muted); font-size: 13px; }

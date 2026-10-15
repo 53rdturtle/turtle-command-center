@@ -14,16 +14,22 @@ const taskId = Number(process.env.TCC_TASK_ID);
 const db = new DatabaseSync(process.env.TCC_DB);
 db.exec('PRAGMA busy_timeout = 10000');
 
+const SUMMARY_MAX = 350;
+
 const TOOLS = [
   {
     name: 'report_checkpoint',
     description:
       'Report back to the user on the command-center board. Call exactly once at the end of every turn, then stop. ' +
-      'The user sees only this summary and picks one of the options (or types a reply).',
+      'The user glances at the TL;DR on a busy board and picks one of the options (or types a reply).',
     inputSchema: {
       type: 'object',
       properties: {
-        summary: { type: 'string', description: 'Markdown, 2-6 short sentences or bullets. Lead with the outcome or decision needed.' },
+        summary: {
+          type: 'string',
+          description: `TL;DR: 2-3 plain sentences, at most ${SUMMARY_MAX} characters, no bullets or headings. What you found or did, and what you need from the user. The decision must be clear from this alone.`,
+        },
+        details: { type: 'string', description: 'Optional markdown behind a "More" toggle: evidence, file paths, caveats, alternatives.' },
         options: {
           type: 'array',
           maxItems: 4,
@@ -32,7 +38,7 @@ const TOOLS = [
             type: 'object',
             properties: {
               label: { type: 'string', description: 'Self-contained instruction, e.g. "Go with approach A: patch the parser (Recommended)"' },
-              detail: { type: 'string', description: 'Optional one-line tradeoff shown under the button' },
+              detail: { type: 'string', description: 'Optional tradeoff in a few words, shown under the button' },
             },
             required: ['label'],
           },
@@ -151,12 +157,18 @@ async function callTool(name, args) {
     case 'report_checkpoint': {
       const summary = String(args.summary ?? '').trim();
       if (!summary) return retryError('summary is required. Call report_checkpoint again with summary and options filled in.');
+      if (summary.length > SUMMARY_MAX) {
+        return retryError(
+          `summary is ${summary.length} characters; the limit is ${SUMMARY_MAX}. Rewrite it as a 2-3 sentence TL;DR and move the rest into details, then call report_checkpoint again.`,
+        );
+      }
+      const details = String(args.details ?? '').trim();
       const options = list(args.options)
         .map((o) => (typeof o === 'string' ? { label: o } : o))
         .filter((o) => o?.label)
         .slice(0, 4);
-      updateTask({ checkpoint: JSON.stringify({ summary, options, done: Boolean(args.done) }) });
-      addEvent('checkpoint', summary);
+      updateTask({ checkpoint: JSON.stringify({ summary, ...(details && { details }), options, done: Boolean(args.done) }) });
+      addEvent('checkpoint', details ? `${summary}\n\n${details}` : summary);
       return text("Checkpoint shown to the user. End your turn now; their reply will arrive as the next message.");
     }
     case 'propose_split': {

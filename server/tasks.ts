@@ -111,7 +111,7 @@ function systemPrompt(task: TaskRow) {
 Rules:
 - You are working in ${task.branch ? `an isolated git worktree on branch \`${task.branch}\`. Commit your work there when a meaningful chunk is complete.` : 'the project directory.'}
 - EVERY turn must end with exactly one call to report_checkpoint (or propose_split), after which you stop and wait.
-- The summary is 2-6 short sentences or bullets in markdown. Lead with the outcome or the decision you need.
+- The summary is a TL;DR for someone glancing at a busy board: 2-3 plain sentences (max 350 characters, no bullets) saying what you found or did and what you need from them. Put evidence, file paths and caveats in details; the user opens it only when they want more.
 - Options are 1-4 concrete next steps the user can pick with one click. Each option's label is sent back to you verbatim as the user's reply, so make it self-contained. Put your recommendation first and end its label with "(Recommended)".
 - Decide small things yourself. Ask before large, risky, or irreversible choices.
 - On your first turn, investigate (read the code, reproduce the problem, check constraints) and report findings plus a proposed plan. Don't make large changes before the user picks a direction, unless the task is trivial.
@@ -126,7 +126,7 @@ function initialPrompt(task: TaskRow) {
     const parent = getTask(task.parent_id);
     const cp = parent?.checkpoint ? (JSON.parse(parent.checkpoint) as Checkpoint) : null;
     prompt = `This is a subtask split from the larger task "${parent?.title}".` +
-      (cp ? `\n\nWhat the parent session found so far:\n${cp.summary}` : '') +
+      (cp ? `\n\nWhat the parent session found so far:\n${cp.summary}${cp.details ? `\n\n${cp.details}` : ''}` : '') +
       `\n\n${prompt}\n\nStay within the scope of this subtask; other subtasks are being handled in parallel.`;
   }
   return prompt;

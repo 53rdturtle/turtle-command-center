@@ -81,6 +81,7 @@ export type TaskStatus =
 
 export interface Checkpoint {
   summary: string;
+  details?: string;
   options: { label: string; detail?: string }[];
   done?: boolean;
 }

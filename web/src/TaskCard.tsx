@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
-import { api, onStream, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
+import { api, onStream, type Checkpoint, type MergeResult, type Permission, type Subtask, type Task, type TaskEvent } from './api.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -149,8 +149,24 @@ function Body({ task, children }: { task: Task; children: Task[] }) {
         </div>
       );
     case 'done':
-      return task.checkpoint ? <div className="summary md"><Markdown>{task.checkpoint.summary}</Markdown></div> : null;
+      return task.checkpoint ? <Summary checkpoint={task.checkpoint} /> : null;
   }
+}
+
+/** The TL;DR, with the agent's supporting details one click away. */
+function Summary({ checkpoint }: { checkpoint: Checkpoint }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="summary">
+      <div className="md"><Markdown>{checkpoint.summary}</Markdown></div>
+      {checkpoint.details && (
+        <>
+          <button className="link" onClick={() => setOpen((o) => !o)}>{open ? 'Less' : 'More'}</button>
+          {open && <div className="details md"><Markdown>{checkpoint.details}</Markdown></div>}
+        </>
+      )}
+    </div>
+  );
 }
 
 function QuickReply({ task }: { task: Task }) {
@@ -159,7 +175,7 @@ function QuickReply({ task }: { task: Task }) {
   return (
     <div>
       {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
-      <div className="summary md"><Markdown>{cp.summary}</Markdown></div>
+      <Summary checkpoint={cp} />
       {cp.options.length > 0 && (
         <div className="options">
           {cp.options.map((o, i) => (

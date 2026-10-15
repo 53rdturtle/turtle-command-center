@@ -1,5 +1,5 @@
 export interface Option { label: string; detail?: string }
-export interface Checkpoint { summary: string; options: Option[]; done?: boolean }
+export interface Checkpoint { summary: string; details?: string; options: Option[]; done?: boolean }
 export interface Subtask { title: string; prompt: string }
 export interface Split { rationale: string; subtasks: Subtask[] }
 export interface Permission { id: string; toolName: string; input: Record<string, unknown> }
