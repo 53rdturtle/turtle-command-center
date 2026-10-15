@@ -11,7 +11,7 @@ import { localOnly } from './guard.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
   accountsDto, addAccount, answerPermission, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
-  merge, mergeable, openInTerminal, reply, retry, runningCount, stop, subscribe, toDto,
+  cancelMerge, dismissMergeFailure, merge, mergeable, openInTerminal, reply, retry, runningCount, stop, subscribe, toDto,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
 
@@ -114,7 +114,9 @@ app.post('/api/tasks/:id/done', async (c) => (await markDone(taskId(c)), c.json(
 app.post('/api/tasks/:id/discard', async (c) => (await discard(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/open-terminal', async (c) => (await openInTerminal(taskId(c)), c.json({ ok: true })));
 app.get('/api/tasks/:id/mergeable', async (c) => c.json({ mergeable: await mergeable(taskId(c)) }));
-app.post('/api/tasks/:id/merge', async (c) => c.json(await merge(taskId(c))));
+app.post('/api/tasks/:id/merge', (c) => c.json(merge(taskId(c))));
+app.post('/api/tasks/:id/merge/cancel', (c) => (cancelMerge(taskId(c)), c.json({ ok: true })));
+app.post('/api/tasks/:id/merge/dismiss', (c) => (dismissMergeFailure(taskId(c)), c.json({ ok: true })));
 
 app.post('/api/permissions/:id', async (c) => {
   const { decision, message } = await c.req.json();

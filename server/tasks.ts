@@ -4,13 +4,13 @@ import { LIMIT_RETRY_MS, MAX_CONCURRENT } from './config.ts';
 import {
   addEvent, db, DB_PATH, getAccount, getPermission, getProject, getTask, lastEvent, listAccounts, pendingPermissions,
   setRunOffset, tasksWithStatus, updateTask,
-  type AccountRow, type Checkpoint, type EventRow, type ProjectRow, type SplitProposal, type TaskRow,
+  type AccountRow, type Checkpoint, type EventRow, type MergeFailure, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { openResumeTerminal } from './openTerminal.ts';
 import {
-  createWorktree, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff, wasMerged,
-  type MergeResult,
+  createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff,
+  wasMerged,
 } from './worktree.ts';
 
 /**
@@ -121,7 +121,9 @@ export function toDto(t: TaskRow) {
     split: t.split ? (JSON.parse(t.split) as SplitProposal) : null,
     queuedPrompt: t.status === 'queued' || t.status === 'limited' ? t.pending_prompt : null,
     error: t.error,
-    merging: t.merge_state === 'resolving',
+    mergeState: t.merge_state,
+    mergePosition: mergePosition(t),
+    mergeFailure: t.merge_failure ? (JSON.parse(t.merge_failure) as MergeFailure) : null,
     retryAt: t.retry_at,
     costUsd: t.cost_usd,
     lastActivity: t.status === 'running' ? (lastEvent(t.id)?.text ?? null) : null,
@@ -349,7 +351,7 @@ async function ensureWorktree(task: TaskRow): Promise<'ok' | 'merged' | 'gone'> 
   const project = getProject(task.project_id)!;
   if (await wasMerged(project.path, task.id)) {
     await discardWorktree(project.path, task.worktree, task.branch); // finish the cleanup the merge started
-    updateTask(task.id, { status: 'done', worktree: null, branch: null, error: null });
+    updateTask(task.id, { status: 'done', worktree: null, branch: null, error: null, merge_state: null, merge_queued_at: null });
     addEvent(task.id, 'user', `Merged \`${task.branch}\` (the server restarted before it could record that).`);
     return 'merged';
   }
@@ -374,6 +376,9 @@ async function repairWorktrees() {
 
 export async function recoverOnStartup() {
   await repairWorktrees();
+  // A merge the server didn't live to finish goes again (if it landed, repairWorktrees already marked the task done,
+  // and if only the cleanup was cut short, merging again is a no-op that finishes it).
+  db.prepare(`UPDATE tasks SET merge_state = 'queued' WHERE merge_state = 'merging'`).run();
   // A conflict-resolving run that ended while the server was down: finish (or drop) its merge.
   for (const t of tasksWithStatus('needs_input')) if (t.merge_state === 'resolving') continueMerge(t.id);
   for (const t of tasksWithStatus('running')) {
@@ -385,6 +390,8 @@ export async function recoverOnStartup() {
     }
   }
   pump();
+  const queued = db.prepare(`SELECT DISTINCT project_id FROM tasks WHERE merge_state = 'queued'`).all() as { project_id: number }[];
+  for (const { project_id } of queued) pumpMerges(project_id);
 }
 
 // ---------- user actions ----------
@@ -404,6 +411,8 @@ export function reply(taskId: number, text: string) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
   if (task.status === 'running') throw new Error('Task is running; wait for its checkpoint or stop it first');
+  if (task.merge_state === 'merging') throw new Error('This task is being merged right now');
+  leaveMergeQueue(task); // the work is about to change; merge again once the agent reports back
   enqueue(taskId, text);
 }
 
@@ -429,7 +438,9 @@ export async function stop(taskId: number) {
 export async function markDone(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
+  if (task.merge_state === 'merging') throw new Error('This task is being merged right now');
   if (task.status === 'running') await stop(taskId);
+  leaveMergeQueue(task);
   const project = getProject(task.project_id)!;
   if (task.branch && task.worktree) await saveAndRemoveWorktree(project.path, task.worktree, taskId);
   updateTask(taskId, { status: 'done', worktree: task.branch ? null : task.worktree });
@@ -438,47 +449,103 @@ export async function markDone(taskId: number) {
 /** Automatic resolve-and-retry rounds per Merge click before the board asks you instead. */
 const MAX_MERGE_ATTEMPTS = 2;
 
-export type MergeOutcome = MergeResult | { ok: false; resolving: true; target: string; conflicts: string[] };
+// ---------- merge queue ----------
+// Merges into a project's checkout run one at a time: two at once would fight over the index, and each merge's
+// conflict check has to see the previous one's result. The queue lives in the database so it survives restarts
+// (merging changes to this app restarts the server).
 
-let mergeChain: Promise<unknown> = Promise.resolve();
-/** Merges run one at a time, so two tasks never land on the checkout at once. */
-function serialized<T>(fn: () => Promise<T>): Promise<T> {
-  const next = mergeChain.then(fn, fn);
-  mergeChain = next.catch(() => {});
-  return next;
-}
+/** Projects with a merge in progress. */
+const merging = new Set<number>();
 
-export async function merge(taskId: number): Promise<MergeOutcome> {
+/** Puts the task in its project's merge queue. */
+export function merge(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
   if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
-  if (task.status === 'running' || task.status === 'queued') throw new Error('Task is running; wait for its checkpoint or stop it first');
-  updateTask(taskId, { merge_attempts: 0 });
-  return serialized(() => attemptMerge(taskId));
+  if (task.status === 'running' || task.status === 'queued' || task.status === 'limited') throw new Error('Task is running; wait for its checkpoint or stop it first');
+  if (task.merge_state) throw new Error('This task is already in the merge queue');
+  updateTask(taskId, { merge_state: 'queued', merge_queued_at: Date.now(), merge_attempts: 0, merge_failure: null });
+  pumpMerges(task.project_id);
+  return { ok: true };
+}
+
+/** Takes the task out of the merge queue, if it hasn't started merging yet. */
+export function cancelMerge(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (task.merge_state !== 'queued') throw new Error('This task is not waiting in the merge queue');
+  updateTask(taskId, { merge_state: null, merge_queued_at: null });
+}
+
+export function dismissMergeFailure(taskId: number) {
+  updateTask(taskId, { merge_failure: null });
+}
+
+/** Drops the task's place in the merge queue (and any stale failure), e.g. when its work changes or ends. */
+function leaveMergeQueue(task: TaskRow) {
+  if (task.merge_state === 'merging') return; // already landing
+  if (task.merge_state || task.merge_failure) updateTask(task.id, { merge_state: null, merge_queued_at: null, merge_failure: null });
+}
+
+/** 1-based place in line for queued tasks (the one merging now is 0); null when not waiting. */
+function mergePosition(task: TaskRow) {
+  if (task.merge_state === 'merging') return 0;
+  if (task.merge_state !== 'queued') return null;
+  return 1 + (db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE project_id = ? AND merge_state = 'queued' AND merge_queued_at < ?`)
+    .get(task.project_id, task.merge_queued_at) as { n: number }).n;
+}
+
+const nextInMergeQueue = (projectId: number) =>
+  db.prepare(`SELECT * FROM tasks WHERE project_id = ? AND merge_state = 'queued' ORDER BY merge_queued_at, id LIMIT 1`)
+    .get(projectId) as TaskRow | undefined;
+
+/** Merges the project's queued tasks in order, one at a time. */
+async function pumpMerges(projectId: number) {
+  if (merging.has(projectId)) return;
+  merging.add(projectId);
+  try {
+    for (let task = nextInMergeQueue(projectId); task; task = nextInMergeQueue(projectId)) {
+      updateTask(task.id, { merge_state: 'merging' });
+      try {
+        await attemptMerge(task.id);
+      } catch (err: any) {
+        const target = (await currentBranch(getProject(projectId)!.path).catch(() => null)) ?? 'HEAD';
+        failMerge(task.id, { target, conflicts: [], message: String(err?.message ?? err) });
+      }
+    }
+  } finally {
+    merging.delete(projectId);
+  }
+}
+
+function failMerge(taskId: number, failure: MergeFailure) {
+  updateTask(taskId, { merge_state: null, merge_queued_at: null, merge_failure: JSON.stringify(failure) });
 }
 
 /**
  * Merges the task branch; on conflicts, hands them to the task's own agent, which knows what its change is for.
- * Once it reports done, `finish` calls this again.
+ * Once it reports done, `continueMerge` puts the task back in the queue.
  */
-async function attemptMerge(taskId: number): Promise<MergeOutcome> {
+async function attemptMerge(taskId: number) {
   const task = getTask(taskId)!;
   if (!task.branch || !task.worktree) throw new Error('This task has no branch to merge');
+  if (task.status === 'running' || task.status === 'queued' || task.status === 'limited') {
+    throw new Error('The agent started working again before the merge; merge once it reports back');
+  }
   const project = getProject(task.project_id)!;
   const result = await mergeTaskBranch(project.path, task.worktree, task.branch, taskId, `Merge task #${taskId}: ${task.title}`);
   if (result.ok) {
-    updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null });
+    updateTask(taskId, { status: 'done', worktree: null, branch: null, merge_state: null, merge_queued_at: null, merge_failure: null });
     addEvent(taskId, 'user', `Merged \`${task.branch}\` into \`${result.target}\`.`);
-    return result;
+    return;
   }
   if (!result.conflicts.length || task.merge_attempts >= MAX_MERGE_ATTEMPTS) {
-    updateTask(taskId, { merge_state: null });
-    return result;
+    failMerge(taskId, { target: result.target, conflicts: result.conflicts, message: result.message });
+    return;
   }
   updateTask(taskId, { merge_state: 'resolving', merge_attempts: task.merge_attempts + 1 });
   addEvent(taskId, 'user', `Merging into \`${result.target}\` conflicts in ${result.conflicts.join(', ')}; asked the agent to resolve them.`);
   enqueue(taskId, resolveConflictsPrompt(result.target, result.conflicts));
-  return { ok: false, resolving: true, target: result.target, conflicts: result.conflicts };
 }
 
 function resolveConflictsPrompt(target: string, conflicts: string[]) {
@@ -493,32 +560,19 @@ Bring your branch up to date in your worktree:
 Then call report_checkpoint with done=true and a one-line summary of how you resolved it; the board will merge your branch automatically. If a conflict needs a product decision (the two sides want different behavior), don't guess: report with done=false and give the user options.`;
 }
 
-/** Called when a conflict-resolving run ends: merge if the agent says it's resolved, otherwise leave it to the user. */
+/** Called when a conflict-resolving run ends: back into the queue if the agent says it's resolved, otherwise leave it to the user. */
 function continueMerge(taskId: number) {
   const task = getTask(taskId)!;
   // A usage-limited run resumes later, on this account or the next.
   if (task.merge_state !== 'resolving' || task.status === 'limited' || task.status === 'queued') return;
   const cp = task.checkpoint ? (JSON.parse(task.checkpoint) as Checkpoint) : null;
   if (task.status !== 'needs_input' || !cp?.done) {
-    updateTask(taskId, { merge_state: null });
+    updateTask(taskId, { merge_state: null, merge_queued_at: null });
     return;
   }
-  serialized(() => attemptMerge(taskId))
-    .then((result) => {
-      if (result.ok || 'resolving' in result) return;
-      const files = result.conflicts.length ? `It still conflicts in ${result.conflicts.join(', ')}.` : result.message;
-      const checkpoint: Checkpoint = {
-        summary: `The agent resolved the conflicts, but merging into ${result.target} still fails. ${files}`.slice(0, 350),
-        details: result.message ? `\`\`\`\n${result.message}\n\`\`\`` : undefined,
-        options: [
-          { label: `Merge ${result.target} into your branch again, resolve the conflicts, run the checks and commit.` },
-        ],
-      };
-      updateTask(taskId, { checkpoint: JSON.stringify(checkpoint) });
-    })
-    .catch((err) => {
-      updateTask(taskId, { merge_state: null, status: 'failed', error: `Merge failed: ${String(err?.message ?? err)}` });
-    });
+  // It keeps its original place in line.
+  updateTask(taskId, { merge_state: 'queued' });
+  pumpMerges(task.project_id);
 }
 
 export async function mergeable(taskId: number) {
@@ -538,7 +592,9 @@ export async function diff(taskId: number) {
 export async function discard(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
+  if (task.merge_state === 'merging') throw new Error('This task is being merged right now');
   if (task.status === 'running') await stop(taskId);
+  leaveMergeQueue(task);
   const project = getProject(task.project_id)!;
   if (task.branch && task.worktree) await discardWorktree(project.path, task.worktree, task.branch);
   updateTask(taskId, { status: 'discarded', worktree: null });
@@ -549,6 +605,8 @@ export async function openInTerminal(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
   if (!task.started || !task.session_id || !task.worktree) throw new Error('This task has no session to resume');
+  if (task.merge_state === 'merging') throw new Error('This task is being merged right now');
+  leaveMergeQueue(task);
   if (task.status === 'running' || task.status === 'queued' || task.status === 'limited') await stop(taskId);
   await openResumeTerminal(task.worktree, task.session_id, `#${taskId} ${task.title}`);
   addEvent(taskId, 'user', 'Opened the session in a terminal.');
@@ -557,5 +615,7 @@ export async function openInTerminal(taskId: number) {
 export function retry(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
+  if (task.merge_state === 'merging') throw new Error('This task is being merged right now');
+  leaveMergeQueue(task);
   enqueue(taskId, task.pending_prompt ?? (task.started ? 'Your previous run ended unexpectedly. Continue where you left off.' : initialPrompt(task)));
 }

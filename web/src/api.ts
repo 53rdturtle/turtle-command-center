@@ -29,8 +29,12 @@ export interface Task {
   split: Split | null;
   queuedPrompt: string | null;
   error: string | null;
-  /** The agent is resolving merge conflicts; the board merges when it's done. */
-  merging: boolean;
+  /** Place in the merge queue: waiting, merging now, or the agent is resolving conflicts first. */
+  mergeState: 'queued' | 'merging' | 'resolving' | null;
+  /** 1-based place in line while queued, 0 while merging, otherwise null. */
+  mergePosition: number | null;
+  /** Why the last merge didn't land; cleared on dismiss or the next merge. */
+  mergeFailure: MergeFailure | null;
   retryAt: number | null;
   costUsd: number;
   lastActivity: string | null;
@@ -59,11 +63,7 @@ export interface Account {
   running: number;
 }
 
-export type MergeResult =
-  | { ok: true; target: string }
-  | { ok: false; target: string; conflicts: string[]; message: string }
-  /** Conflicts were handed to the task's agent; the merge finishes on its own. */
-  | { ok: false; resolving: true; target: string; conflicts: string[] };
+export interface MergeFailure { target: string; conflicts: string[]; message: string }
 
 export interface DiffFile {
   path: string;
@@ -114,7 +114,9 @@ export const api = {
   discard: (id: number) => call('POST', `/api/tasks/${id}/discard`),
   openTerminal: (id: number) => call('POST', `/api/tasks/${id}/open-terminal`),
   mergeable: (id: number) => call<{ mergeable: boolean }>('GET', `/api/tasks/${id}/mergeable`).then((r) => r.mergeable),
-  merge: (id: number) => call<MergeResult>('POST', `/api/tasks/${id}/merge`),
+  merge: (id: number) => call('POST', `/api/tasks/${id}/merge`),
+  cancelMerge: (id: number) => call('POST', `/api/tasks/${id}/merge/cancel`),
+  dismissMergeFailure: (id: number) => call('POST', `/api/tasks/${id}/merge/dismiss`),
   permission: (id: string, decision: 'allow' | 'always' | 'deny') => call('POST', `/api/permissions/${id}`, { decision }),
 };
 
@@ -146,7 +148,9 @@ export const MODELS = ['sonnet', 'opus', 'haiku'];
 export const PERMISSION_MODES = ['acceptEdits', 'auto', 'manual', 'plan', 'bypassPermissions'];
 
 /** The agent reported done=true and is waiting for your final review; Mark done / Merge moves it to Done. */
-export const agentDone = (t: Task) => t.status === 'needs_input' && Boolean(t.checkpoint?.done) && t.permissions.length === 0;
+export const agentDone = (t: Task) =>
+  t.status === 'needs_input' && Boolean(t.checkpoint?.done) && t.permissions.length === 0 && !t.mergeState && !t.mergeFailure;
 
 export const needsAttention = (t: Task) =>
-  t.permissions.length > 0 || (t.status === 'needs_input' && !agentDone(t)) || t.status === 'split_proposed' || t.status === 'failed';
+  t.permissions.length > 0 || Boolean(t.mergeFailure) ||
+  (t.status === 'needs_input' && !t.checkpoint?.done && !t.mergeState) || t.status === 'split_proposed' || t.status === 'failed';
