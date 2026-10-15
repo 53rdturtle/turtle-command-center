@@ -344,3 +344,10 @@ button.chip-button:hover { color: var(--text); }
 .panel .try-command { margin: 12px 0; }
 .panel .try-command span { font-size: 12px; }
 .try-note { font-size: 13px; margin: 8px 0 0; }
+
+.filter-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: -8px 0 18px; }
+.filter-bar input { flex: 1 1 240px; max-width: 420px; }
+.chip { background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 99px; padding: 3px 10px; font-size: 13px; }
+.chip:hover { color: var(--text); background: var(--surface-2); }
+.chip-on, .chip-on:hover { color: var(--accent); border-color: var(--accent); background: var(--surface); }
+.columns.single { grid-template-columns: 1fr; }
