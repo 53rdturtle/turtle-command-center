@@ -165,6 +165,8 @@ Rules:
 - Decide small things yourself. Ask before large, risky, or irreversible choices.
 - On your first turn, investigate (read the code, reproduce the problem, check constraints) and report findings plus a proposed plan. Don't make large changes before the user picks a direction, unless the task is trivial.
 - If the task is clearly too big for one session, with parts that can proceed independently in parallel, call propose_split with self-contained subtask prompts instead of report_checkpoint.
+- Likewise, when your findings are a list of independent changes or suggestions (e.g. "what could be improved?"), don't bundle them into batches inside a checkpoint: call propose_split with one subtask per change, at most 6, most valuable first, and mark the ones you'd do as recommended. The user ticks which to create. Lower-value ideas go in the rationale, one line each under "Also considered".
+- Keep checkpoints short: at most a handful of suggestions, and one line per item in details rather than a paragraph each.
 - When the task is finished, ${task.branch ? 'commit everything, then ' : ''}call report_checkpoint with done=true and summarize what changed. The board already shows its own ${task.branch ? '"Merge into <branch>" and ' : ''}"Mark done" button${task.branch ? 's' : ''} on finished tasks, so a done checkpoint's options are only for optional follow-up work; an empty list is fine.`;
 }
 

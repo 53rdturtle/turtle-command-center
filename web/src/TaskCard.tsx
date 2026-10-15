@@ -381,26 +381,42 @@ function ReplyBox({ taskId, placeholder = 'Reply in your own words or paste a sc
 }
 
 function SplitReview({ task }: { task: Task }) {
-  const [subtasks, setSubtasks] = useState<Subtask[]>(task.split!.subtasks);
+  const proposed = task.split!.subtasks;
+  // Recommended subtasks start ticked; with no recommendation, all of them do.
+  const anyRecommended = proposed.some((s) => s.recommended);
+  const [subtasks, setSubtasks] = useState(() => proposed.map((s) => ({ ...s, picked: !anyRecommended || !!s.recommended })));
+  const [open, setOpen] = useState<number | null>(null);
   const { busy, error, run } = useAction();
-  const update = (i: number, patch: Partial<Subtask>) =>
+  const update = (i: number, patch: Partial<(typeof subtasks)[number]>) =>
     setSubtasks((list) => list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+  const picked = subtasks.filter((s) => s.picked).map(({ title, prompt }) => ({ title, prompt }));
 
   return (
     <div>
       <div className="summary md"><Markdown>{task.split!.rationale}</Markdown></div>
-      <ol className="subtasks">
+      <ul className="subtasks">
         {subtasks.map((s, i) => (
-          <li key={i}>
-            <input value={s.title} onChange={(e) => update(i, { title: e.target.value })} />
-            <textarea rows={3} value={s.prompt} onChange={(e) => update(i, { prompt: e.target.value })} />
-            <button className="ghost small" onClick={() => setSubtasks((l) => l.filter((_, j) => j !== i))}>Remove</button>
+          <li key={i} className={s.picked ? '' : 'unpicked'}>
+            <div className="subtask-row">
+              <input type="checkbox" checked={s.picked} onChange={(e) => update(i, { picked: e.target.checked })} aria-label={`Create "${s.title}"`} />
+              <button className="subtask-head" onClick={() => setOpen((o) => (o === i ? null : i))} aria-expanded={open === i}>
+                <strong>{s.title}</strong>
+                {s.recommended && <span className="subtask-rec">Recommended</span>}
+                {open !== i && <small>{truncate(s.prompt, 140)}</small>}
+              </button>
+            </div>
+            {open === i && (
+              <div className="subtask-edit">
+                <input value={s.title} onChange={(e) => update(i, { title: e.target.value })} />
+                <textarea rows={5} value={s.prompt} onChange={(e) => update(i, { prompt: e.target.value })} />
+              </div>
+            )}
           </li>
         ))}
-      </ol>
+      </ul>
       <div className="options">
-        <button className="option primary" disabled={busy || subtasks.length === 0} onClick={() => run(() => api.approveSplit(task.id, subtasks))}>
-          Create {subtasks.length} subtask{subtasks.length === 1 ? '' : 's'}
+        <button className="option primary" disabled={busy || picked.length === 0} onClick={() => run(() => api.approveSplit(task.id, picked))}>
+          Create {picked.length} subtask{picked.length === 1 ? '' : 's'}
         </button>
         <button className="option" disabled={busy} onClick={() => run(() => api.reply(task.id, "Don't split. Keep this as one task and continue."))}>
           Keep as one task
