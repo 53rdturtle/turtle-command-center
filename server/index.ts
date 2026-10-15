@@ -5,18 +5,21 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { MAX_CONCURRENT, PORT } from './config.ts';
-import { db, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
+import { PORT } from './config.ts';
+import { db, getMaxConcurrent, getProjectBySlug, listEvents, listProjects, listTasks, type ProjectRow } from './db.ts';
+import { localOnly } from './guard.ts';
+import { boardVersion, startUpdate } from './selfUpdate.ts';
 import { pickFolder } from './pickFolder.ts';
 import {
-  answerPermission, approveSplit, createTask, discard, markDone, recoverOnStartup,
-  merge, openInTerminal, reply, retry, runningCount, stop, subscribe, toDto,
+  accountsDto, addAccount, answerPermission, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
+  cancelMerge, dismissMergeFailure, merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, toDto,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
 
 const app = new Hono();
 
 app.onError((err, c) => c.json({ error: err.message }, 400));
+app.use('/api/*', localOnly);
 
 const projectDto = async (p: ProjectRow) => ({
   currentBranch: await currentBranch(p.path),
@@ -54,6 +57,22 @@ app.patch('/api/projects/:slug', async (c) => {
   return c.json(await projectDto(getProjectBySlug(project.slug)!));
 });
 
+// ---------- accounts ----------
+// Tokens never leave the server; the UI only sees names and limit state.
+
+app.get('/api/accounts', (c) => c.json(accountsDto()));
+
+app.post('/api/accounts', async (c) => {
+  const { name, token } = await c.req.json();
+  if (!name?.trim()) throw new Error('Name is required');
+  if (!token?.trim() || /\s/.test(token.trim())) throw new Error('Paste the token printed by `claude setup-token`');
+  addAccount(name.trim(), token.trim());
+  return c.json(accountsDto());
+});
+
+app.delete('/api/accounts/:id', (c) => (removeAccount(Number(c.req.param('id'))), c.json(accountsDto())));
+app.post('/api/accounts/:id/clear-limit', (c) => (clearAccountLimit(Number(c.req.param('id'))), c.json(accountsDto())));
+
 app.post('/api/pick-folder', async (c) => c.json({ path: await pickFolder() }));
 
 // ---------- tasks ----------
@@ -75,6 +94,7 @@ app.post('/api/projects/:slug/tasks', async (c) => {
 const taskId = (c: { req: { param: (k: string) => string } }) => Number(c.req.param('id'));
 
 app.get('/api/tasks/:id/events', (c) => c.json(listEvents(taskId(c))));
+app.get('/api/tasks/:id/diff', async (c) => c.json(await diff(taskId(c))));
 
 app.post('/api/tasks/:id/reply', async (c) => {
   const { text } = await c.req.json();
@@ -94,7 +114,10 @@ app.post('/api/tasks/:id/retry', (c) => (retry(taskId(c)), c.json({ ok: true }))
 app.post('/api/tasks/:id/done', async (c) => (await markDone(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/discard', async (c) => (await discard(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/open-terminal', async (c) => (await openInTerminal(taskId(c)), c.json({ ok: true })));
-app.post('/api/tasks/:id/merge', async (c) => c.json(await merge(taskId(c))));
+app.get('/api/tasks/:id/mergeable', async (c) => c.json({ mergeable: await mergeable(taskId(c)) }));
+app.post('/api/tasks/:id/merge', (c) => c.json(merge(taskId(c))));
+app.post('/api/tasks/:id/merge/cancel', (c) => (cancelMerge(taskId(c)), c.json({ ok: true })));
+app.post('/api/tasks/:id/merge/dismiss', (c) => (dismissMergeFailure(taskId(c)), c.json({ ok: true })));
 
 app.post('/api/permissions/:id', async (c) => {
   const { decision, message } = await c.req.json();
@@ -102,7 +125,16 @@ app.post('/api/permissions/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-app.get('/api/status', (c) => c.json({ running: runningCount(), maxConcurrent: MAX_CONCURRENT }));
+const status = () => ({ running: runningCount(), maxConcurrent: getMaxConcurrent() });
+app.get('/api/board-version', async (c) => c.json(await boardVersion()));
+app.post('/api/board-update', async (c) => (await startUpdate(), c.json({ ok: true })));
+
+app.get('/api/status', (c) => c.json(status()));
+app.patch('/api/settings', async (c) => {
+  const { maxConcurrent } = await c.req.json();
+  setMaxConcurrent(Number(maxConcurrent));
+  return c.json(status());
+});
 
 // ---------- live updates ----------
 
@@ -113,7 +145,9 @@ app.get('/api/stream', (c) =>
     });
     stream.onAbort(() => { unsubscribe(); });
     while (!stream.aborted) {
-      await stream.writeSSE({ event: 'status', data: JSON.stringify({ running: runningCount(), maxConcurrent: MAX_CONCURRENT }) });
+      const account = accountsDto().find((a) => a.active);
+      const usage = account?.usage ? { account: account.name, ...account.usage } : null;
+      await stream.writeSSE({ event: 'status', data: JSON.stringify({ ...status(), usage }) });
       await stream.sleep(5000);
     }
   }));
@@ -129,6 +163,6 @@ if (existsSync(dist)) {
 
 serve({ fetch: app.fetch, port: PORT, hostname: '127.0.0.1' }, () => {
   console.log(`🐢 Turtle Command Center API on http://localhost:${PORT}`);
-  recoverOnStartup();
+  recoverOnStartup().catch((err) => console.error('[tasks] startup recovery failed:', err));
 });
 
