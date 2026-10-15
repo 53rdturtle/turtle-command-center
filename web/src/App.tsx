@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, type Project, type Task } from './api.ts';
-import { CardErrorBoundary, TaskCard } from './TaskCard.tsx';
+import { CardErrorBoundary, enterToSubmit, TaskCard } from './TaskCard.tsx';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
 
@@ -191,8 +191,8 @@ function NewTask({ project }: { project: Project }) {
           rows={3}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && (e.ctrlKey || e.metaKey) && submit()}
-          placeholder="Details, context, links… (optional, Ctrl+Enter to start)"
+          onKeyDown={enterToSubmit(submit)}
+          placeholder="Details, context, links… (optional, Enter to start, Ctrl+Enter for new line)"
         />
       )}
       {error && <p className="error">{error}</p>}
