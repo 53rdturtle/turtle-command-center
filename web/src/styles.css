@@ -102,8 +102,6 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 .brand { font-weight: 700; font-size: 16px; margin-right: 6px; white-space: nowrap; }
 .project-picker { width: auto; min-width: 160px; font-weight: 600; }
 .spacer { flex: 1; }
-.bell { padding: 4px 8px; font-size: 15px; line-height: 1; filter: grayscale(1); opacity: 0.7; }
-.bell.on { filter: none; opacity: 1; }
 .card.flash { animation: flash 1.6s ease-out; }
 @keyframes flash { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 3px transparent; } }
 button.ghost.toggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
@@ -132,6 +130,11 @@ button.ghost.toggle[aria-pressed="true"] { color: var(--accent); background: var
 .panel { padding: 16px; margin: 8px 0 16px; display: grid; gap: 10px; }
 .panel h2 { margin: 0; font-size: 16px; }
 .panel h3 { margin: 6px 0 0; font-size: 14px; }
+.panel h4 { margin: 4px 0 0; font-size: 13px; }
+.panel label.check { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.settings-section { display: grid; gap: 10px; }
+.settings-section + .settings-section { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
+.settings-section h3 { margin: 0; }
 .panel label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); flex: 1; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; }
 .row.end { justify-content: flex-end; }
