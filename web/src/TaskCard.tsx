@@ -2,7 +2,7 @@ import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type
 import Markdown from 'react-markdown';
 import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
 import { ago, elapsed, useNow } from './time.ts';
-import { agentDone, api, MODELS, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
+import { agentDone, api, MODELS, onStream, type Checkpoint, type SyncResult, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 import { duration, kTokens, usageBreakdown } from './usage.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
@@ -41,23 +41,27 @@ function useAction() {
   return { busy, error, run };
 }
 
-/** True when the task branch has work the checkout lacks; rechecked on task updates, branch switches and window focus. */
+/**
+ * Whether the task branch has work the checkout lacks, and how many commits the checkout has that the branch lacks;
+ * rechecked on task updates, branch switches, window focus and `recheck`.
+ */
 function useMergeable(task: Task, targetBranch: string | null) {
   const eligible = Boolean(task.branch && task.worktree) && !task.mergeState && !['running', 'queued', 'done'].includes(task.status);
-  const [mergeable, setMergeable] = useState(false);
+  const [state, setState] = useState({ mergeable: false, behind: 0 });
+  const [nonce, setNonce] = useState(0);
   useEffect(() => {
-    if (!eligible) return setMergeable(false);
+    if (!eligible) return setState({ mergeable: false, behind: 0 });
     let alive = true;
     // If the check itself fails, show the button and let a merge attempt report the problem.
-    const check = () => api.mergeable(task.id).catch(() => true).then((m) => alive && setMergeable(m));
+    const check = () => api.mergeable(task.id).catch(() => ({ mergeable: true, behind: 0 })).then((m) => alive && setState(m));
     check();
     addEventListener('focus', check);
     return () => {
       alive = false;
       removeEventListener('focus', check);
     };
-  }, [eligible, task.id, task.updatedAt, targetBranch]);
-  return eligible && mergeable;
+  }, [eligible, task.id, task.updatedAt, targetBranch, nonce]);
+  return { canMerge: eligible && state.mergeable, behind: eligible ? state.behind : 0, recheck: () => setNonce((n) => n + 1) };
 }
 
 type CardProps = { task: Task; parent?: Task; children: Task[]; targetBranch: string | null; defaultModel: string; tryCommand?: string };
@@ -79,14 +83,21 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
   const [tried, setTried] = useState<TryEnv | null>(null);
+  const [syncFailure, setSyncFailure] = useState<Extract<SyncResult, { ok: false }> | null>(null);
   const { busy, error, run } = useAction();
   const status = task.permissions.length ? 'permission' : agentDone(task) ? 'review' : task.status;
   const active = task.status === 'running' || task.status === 'queued';
-  const canMerge = useMergeable(task, targetBranch);
+  const { canMerge, behind, recheck } = useMergeable(task, targetBranch);
   const hasWorktree = Boolean(task.branch && task.worktree);
   const diff = useDiff(task, hasWorktree && (showChanges || !['running', 'queued'].includes(task.status)));
   const merge = () => run(() => api.merge(task.id));
   const target = targetBranch ?? 'your branch';
+  const sync = () => run(async () => {
+    const result = await api.sync(task.id);
+    setSyncFailure(result.ok ? null : result);
+    recheck();
+    diff.reload();
+  });
   // Checkpoint options tagged with a board action run the matching card button; null hides an option that can't run now.
   const boardAction = (action: NonNullable<Option['action']>) =>
     action === 'merge' ? (canMerge ? merge : null)
@@ -144,6 +155,12 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
             {showChanges ? '▾' : '▸'} <span className="add">+{diff.data.additions}</span> <span className="del">−{diff.data.deletions}</span> · {diff.data.files.length} file{diff.data.files.length === 1 ? '' : 's'}
           </button>
         )}
+        {behind > 0 && (
+          <button className="chip chip-button" disabled={busy} onClick={sync}
+            title={`${target} has ${behind} commit${behind === 1 ? '' : 's'} this branch lacks. Click to merge ${target} into the task's worktree.`}>
+            ↓ Sync {behind} from {target}
+          </button>
+        )}
         <UsageChip task={task} />
       </div>
 
@@ -175,6 +192,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
           <button className="ghost small" onClick={() => setTried(null)}>×</button>
         </p>
       )}
+      {syncFailure && <SyncFailureNotice taskId={task.id} failure={syncFailure} onDismiss={() => setSyncFailure(null)} />}
       {task.mergeFailure && <MergeFailureNotice taskId={task.id} failure={task.mergeFailure} />}
       {error && <p className="error">{error}</p>}
 
@@ -202,6 +220,11 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
               )}
               {resumeCmd && <MenuItem onClick={copyResume} title={resumeCmd}>{copied ? 'Copied ✓' : 'Copy resume command'}</MenuItem>}
               {task.status === 'limited' && <MenuItem disabled={busy} onClick={() => run(() => api.stop(task.id))}>Stop</MenuItem>}
+              {behind > 0 && (
+                <MenuItem disabled={busy} onClick={sync} title={`Merge ${target} into this task's worktree to pick up work merged since it branched`}>
+                  Sync with {target}
+                </MenuItem>
+              )}
               {doneInMenu && (
                 <MenuItem disabled={busy} onClick={() => run(() => api.done(task.id))} title="Keep the branch, remove the worktree">Mark done</MenuItem>
               )}
@@ -511,6 +534,33 @@ Note from the user: ${trimmedNote}` : prompt);
         <button className="option" disabled={busy} onClick={() => run(() => api.reply(task.id, withNote("Don't split. Keep this as one task and continue.")))}>
           Keep as one task
         </button>
+      </div>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+function SyncFailureNotice({ taskId, failure, onDismiss }: { taskId: number; failure: Extract<SyncResult, { ok: false }>; onDismiss: () => void }) {
+  const { busy, error, run } = useAction();
+  const askAgent = () => run(async () => {
+    await api.reply(taskId,
+      `Bring your branch up to date: run \`git merge ${failure.target}\` in your worktree; it conflicts in: ${failure.conflicts.join(', ')}. ` +
+      `Resolve the conflicts so both your change and ${failure.target}'s intent survive, run any relevant checks, commit, and report back.`);
+    onDismiss();
+  });
+  return (
+    <div className="merge-failure">
+      {failure.conflicts.length ? (
+        <>
+          <p><strong>Syncing with {failure.target} conflicts</strong>. Nothing was merged, so the worktree is unchanged.</p>
+          <ul>{failure.conflicts.map((f) => <li key={f}><code>{f}</code></li>)}</ul>
+        </>
+      ) : (
+        <p><strong>Couldn't sync with {failure.target}.</strong> {failure.message}</p>
+      )}
+      <div className="options">
+        {failure.conflicts.length > 0 && <button className="option primary" disabled={busy} onClick={askAgent}>Ask the agent to sync and resolve them</button>}
+        <button className="option" disabled={busy} onClick={onDismiss}>Dismiss</button>
       </div>
       {error && <p className="error">{error}</p>}
     </div>

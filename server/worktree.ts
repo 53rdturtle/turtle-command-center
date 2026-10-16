@@ -185,6 +185,52 @@ export async function mergeTaskBranch(repo: string, worktree: string, branch: st
   return { ok: true, target };
 }
 
+/** How many commits the main checkout's branch has that the task branch lacks. */
+export async function commitsBehind(repo: string, worktree: string) {
+  const targetSha = await git(repo, 'rev-parse', 'HEAD');
+  return Number(await git(worktree, 'rev-list', '--count', `HEAD..${targetSha}`));
+}
+
+export type SyncResult =
+  | { ok: true; target: string; commits: number }
+  | { ok: false; target: string; conflicts: string[]; message: string };
+
+/**
+ * Merges the main checkout's branch into the task branch, so the task picks up work merged since it branched.
+ * Uncommitted work is committed first. On conflicts nothing is merged, so the worktree's files stay as they were.
+ */
+export async function syncWorktree(repo: string, worktree: string, taskId: number): Promise<SyncResult> {
+  const target = (await currentBranch(repo)) ?? 'HEAD';
+  const targetSha = await git(repo, 'rev-parse', 'HEAD');
+  for (const [name, what] of IN_PROGRESS) {
+    if (existsSync(resolve(worktree, await git(worktree, 'rev-parse', '--git-path', name)))) {
+      return { ok: false, target, conflicts: [], message: `The task's worktree is in the middle of ${what}. Finish or abort it first.` };
+    }
+  }
+  const commits = Number(await git(worktree, 'rev-list', '--count', `HEAD..${targetSha}`));
+  if (commits === 0) return { ok: true, target, commits };
+  // Committed first so the conflict check sees it, as mergeTaskBranch does.
+  if ((await git(worktree, 'status', '--porcelain')) !== '') {
+    await git(worktree, 'add', '-A');
+    await git(worktree, 'commit', '-m', `tcc: uncommitted work from task #${taskId}`);
+  }
+  // Same in-memory conflict check as mergeTaskBranch, so a conflict never leaves markers in the worktree.
+  try {
+    await git(worktree, 'merge-tree', '--write-tree', '--name-only', 'HEAD', targetSha);
+  } catch (err: any) {
+    if (err.code !== 1) throw err;
+    const [files, messages = ''] = String(err.stdout).split(/\r?\n\r?\n/);
+    return { ok: false, target, conflicts: files.split(/\r?\n/).slice(1).filter(Boolean), message: messages.trim() };
+  }
+  try {
+    await git(worktree, 'merge', '-m', `Sync with ${target}`, targetSha);
+  } catch (err: any) {
+    await git(worktree, 'merge', '--abort').catch(() => {});
+    return { ok: false, target, conflicts: [], message: String(err.stderr || err.stdout || err.message).trim() };
+  }
+  return { ok: true, target, commits };
+}
+
 /** Whether a "Merge task #N" commit made by mergeTaskBranch is in the checkout's history. */
 export async function wasMerged(repo: string, taskId: number) {
   return (await git(repo, 'log', '-1', '--format=%H', `--grep=^Merge task #${taskId}:`, 'HEAD').catch(() => '')) !== '';

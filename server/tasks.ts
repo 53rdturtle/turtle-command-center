@@ -13,8 +13,8 @@ import { openResumeTerminal, openShellTerminal } from './openTerminal.ts';
 import { findBrowser } from './browser.ts';
 import { cleanupTaskImages, sweepImages } from './images.ts';
 import {
-  createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, reopenWorktree, restoreWorktree, saveAndRemoveWorktree, taskDiff,
-  wasMerged,
+  commitsBehind, createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, reopenWorktree, restoreWorktree, saveAndRemoveWorktree, syncWorktree,
+  taskDiff, wasMerged,
 } from './worktree.ts';
 
 /**
@@ -746,6 +746,28 @@ export async function mergeable(taskId: number) {
   return hasWorkToMerge(getProject(task.project_id)!.path, task.worktree, task.branch);
 }
 
+/** Commits on the checkout's branch that the task's worktree lacks; 0 when there's no worktree. */
+export async function behind(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (!task.branch || !task.worktree || !existsSync(task.worktree)) return 0;
+  return commitsBehind(getProject(task.project_id)!.path, task.worktree);
+}
+
+/** Merges the checkout's branch into the task's worktree, e.g. after a big change landed there. */
+export async function sync(taskId: number) {
+  const task = getTask(taskId);
+  if (!task) throw new Error('Task not found');
+  if (!task.branch || !task.worktree || !existsSync(task.worktree)) throw new Error('This task has no worktree to sync');
+  if (task.status === 'running' || task.status === 'queued') throw new Error('The agent is working; sync once it reports back or stop it first');
+  if (task.merge_state) throw new Error('This task is in the merge queue');
+  const result = await syncWorktree(getProject(task.project_id)!.path, task.worktree, taskId);
+  if (result.ok && result.commits) {
+    addEvent(taskId, 'user', `Synced with \`${result.target}\` (${result.commits} new commit${result.commits === 1 ? '' : 's'}).`);
+  }
+  return result;
+}
+
 export async function diff(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
@@ -757,7 +779,7 @@ const RESOLVE_PROMPT = /^The user clicked Merge, but your branch conflicts with 
 // Prompts and notes the board writes into the timeline itself, as opposed to the user's replies.
 const BOARD_EVENTS = [
   /^You were interrupted by a usage limit\./, /^Your previous run ended unexpectedly\./,
-  /^Merged `/, /^Approved split into \d+ subtasks\.$/, /^Opened the session in a terminal\.$/,
+  /^Merged `/, /^Synced with `/, /^Approved split into \d+ subtasks\.$/, /^Opened the session in a terminal\.$/,
   /hit its usage limit; continuing on /, /^Merging into `.*` conflicts in /, RESOLVE_PROMPT,
 ];
 const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max).trimEnd()}…` : s);

@@ -97,6 +97,10 @@ export interface Account {
 }
 
 /** `reason` and `files` are missing on failures stored before they existed. */
+export type SyncResult =
+  | { ok: true; target: string; commits: number }
+  | { ok: false; target: string; conflicts: string[]; message: string };
+
 export interface MergeFailure {
   target: string;
   reason?: 'dirty' | 'detached' | 'in_progress' | 'conflicts' | 'error';
@@ -177,7 +181,9 @@ export const api = {
   discard: (id: number) => call('POST', `/api/tasks/${id}/discard`),
   openTerminal: (id: number) => call('POST', `/api/tasks/${id}/open-terminal`),
   tryIt: (id: number) => call<TryEnv>('POST', `/api/tasks/${id}/try`),
-  mergeable: (id: number) => call<{ mergeable: boolean }>('GET', `/api/tasks/${id}/mergeable`).then((r) => r.mergeable),
+  /** Whether the branch has work to merge, and how many commits the checkout's branch has that it lacks. */
+  mergeable: (id: number) => call<{ mergeable: boolean; behind: number }>('GET', `/api/tasks/${id}/mergeable`),
+  sync: (id: number) => call<SyncResult>('POST', `/api/tasks/${id}/sync`),
   merge: (id: number) => call('POST', `/api/tasks/${id}/merge`),
   cancelMerge: (id: number) => call('POST', `/api/tasks/${id}/merge/cancel`),
   dismissMergeFailure: (id: number) => call('POST', `/api/tasks/${id}/merge/dismiss`),
