@@ -471,7 +471,13 @@ function SplitReview({ task }: { task: Task }) {
   const { busy, error, run } = useAction();
   const update = (i: number, patch: Partial<(typeof subtasks)[number]>) =>
     setSubtasks((list) => list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
-  const picked = subtasks.filter((s) => s.picked).map(({ title, prompt }) => ({ title, prompt }));
+  const [note, setNote] = useState('');
+  const trimmedNote = note.trim();
+  // Your note rides along with whichever choice you make: appended to every created subtask, or sent to the agent.
+  const withNote = (prompt: string) => (trimmedNote ? `${prompt}
+
+Note from the user: ${trimmedNote}` : prompt);
+  const picked = subtasks.filter((s) => s.picked).map(({ title, prompt }) => ({ title, prompt: withNote(prompt) }));
 
   return (
     <div>
@@ -496,11 +502,18 @@ function SplitReview({ task }: { task: Task }) {
           </li>
         ))}
       </ul>
+      <textarea className="split-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
+        placeholder="Add your own comment (optional): added to every subtask you create, or sent to the agent" />
       <div className="options">
         <button className="option primary" disabled={busy || picked.length === 0} onClick={() => run(() => api.approveSplit(task.id, picked))}>
           Create {picked.length} subtask{picked.length === 1 ? '' : 's'}
         </button>
-        <button className="option" disabled={busy} onClick={() => run(() => api.reply(task.id, "Don't split. Keep this as one task and continue."))}>
+        {trimmedNote && (
+          <button className="option" disabled={busy} onClick={() => run(() => api.reply(task.id, `Revise the split proposal: ${trimmedNote}`))}>
+            Ask agent to revise the split
+          </button>
+        )}
+        <button className="option" disabled={busy} onClick={() => run(() => api.reply(task.id, withNote("Don't split. Keep this as one task and continue.")))}>
           Keep as one task
         </button>
       </div>
