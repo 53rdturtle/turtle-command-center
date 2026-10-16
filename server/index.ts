@@ -15,7 +15,7 @@ import { pickFolder } from './pickFolder.ts';
 import { readImage, saveImage } from './images.ts';
 import {
   accountsDto, addAccount, answerPermission, usageToday, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
-  behind, cancelMerge, dismissMergeFailure, merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, sync, toDto, tryIt,
+  behind, cancelMerge, dismissMergeFailure, merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, sync, toDto, tryIt, tryProject,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
 
@@ -29,8 +29,14 @@ const projectDto = async (p: ProjectRow) => ({
   slug: p.slug, name: p.name, path: p.path, remote: p.remote,
   defaultModel: p.default_model, permissionMode: p.permission_mode, alwaysAllow: JSON.parse(p.always_allow),
   tryCommand: p.try_command ?? '',
-  suggestedTryCommand: existsSync(resolve(p.path, 'package.json')) ? 'npm install && npm run dev' : '',
+  suggestedTryCommand: suggestTryCommand(p.path),
 });
+
+function suggestTryCommand(path: string) {
+  if (existsSync(resolve(path, 'project.godot'))) return 'godot --path .';
+  if (existsSync(resolve(path, 'package.json'))) return 'npm install && npm run dev';
+  return '';
+}
 
 // ---------- projects ----------
 
@@ -61,6 +67,12 @@ app.patch('/api/projects/:slug', async (c) => {
     project.id,
   );
   return c.json(await projectDto(getProjectBySlug(project.slug)!));
+});
+
+app.post('/api/projects/:slug/try', async (c) => {
+  const project = getProjectBySlug(c.req.param('slug'));
+  if (!project) return c.json({ error: 'Project not found' }, 404);
+  return c.json(await tryProject(project.id));
 });
 
 // ---------- accounts ----------

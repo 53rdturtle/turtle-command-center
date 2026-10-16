@@ -73,6 +73,8 @@ only share the SQLite database and log files.
   `npm install && npm run dev`), or just a shell when there is none. The terminal gets free ports in `TCC_PORT` and
   `TCC_DEV_PORT` and a sandbox `TCC_DATA_DIR` (`~/.turtle-cc/try/<task>`), so when the project is this app, the copy
   under test runs beside your board with its own empty database instead of picking up your tasks.
+  The **Try it** button in the header does the same in the project's main checkout, to try everything merged so far.
+  Settings suggests a Try command from the repo (`godot --path .` for a Godot project, `npm install && npm run dev` with a `package.json`).
 - **Agents test their own copy** too. Each agent run gets free `TCC_PORT` / `TCC_DEV_PORT` and its own sandbox
   `TCC_DATA_DIR` (`~/.turtle-cc/try/<task>-agent`, separate from the Try it one). The system prompt tells the agent to
   start the project with its Try command, stop what it started, and check pages with a headless Chrome screenshot

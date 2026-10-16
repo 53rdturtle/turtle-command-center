@@ -382,6 +382,7 @@ button.chip-button:hover { color: var(--text); }
 .usage-limited { color: var(--danger); }
 .panel .try-command { margin: 12px 0; }
 .panel .try-command span { font-size: 12px; }
+.panel .try-command .use-suggestion { justify-self: start; }
 .try-note { font-size: 13px; margin: 8px 0 0; }
 
 .filter-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: -8px 0 18px; }
