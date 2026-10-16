@@ -432,7 +432,7 @@ function NewTask({ project }: { project: Project }) {
 }
 
 function AddProject({ onClose, onAdded }: { onClose: () => void; onAdded: (p: Project) => void }) {
-  const [form, setForm] = useState({ name: '', path: '', defaultModel: 'sonnet', permissionMode: 'acceptEdits' });
+  const [form, setForm] = useState({ name: '', path: '', defaultModel: 'opus', permissionMode: 'auto' });
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
 

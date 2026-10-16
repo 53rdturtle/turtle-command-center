@@ -45,7 +45,7 @@ app.post('/api/projects', async (c) => {
   while (getProjectBySlug(slug)) slug += '-2';
   db.prepare(`INSERT INTO projects (slug, name, path, remote, default_model, permission_mode, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(slug, name.trim(), absPath, await getRemote(absPath), defaultModel || 'sonnet', permissionMode || 'acceptEdits', Date.now());
+    .run(slug, name.trim(), absPath, await getRemote(absPath), defaultModel || 'opus', permissionMode || 'auto', Date.now());
   return c.json(await projectDto(getProjectBySlug(slug)!));
 });
 
