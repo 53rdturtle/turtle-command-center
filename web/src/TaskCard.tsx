@@ -3,7 +3,7 @@ import Markdown from 'react-markdown';
 import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
 import { ago, elapsed, useNow } from './time.ts';
 import { agentDone, api, MODELS, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
-import { duration, kTokens, totalTokens, usageBreakdown } from './usage.ts';
+import { duration, freshTokens, kTokens, usageBreakdown } from './usage.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -290,7 +290,7 @@ function UsageChip({ task }: { task: Task }) {
     ...usageBreakdown(u),
     task.costUsd > 0 && `≈$${task.costUsd.toFixed(2)} API-equivalent (not billed on a subscription)`,
   ].filter(Boolean).join('\n');
-  return <span className="chip" title={title}>{kTokens(totalTokens(u))} tok · {duration(u.durationMs)}</span>;
+  return <span className="chip" title={title}>{kTokens(freshTokens(u))} tok · {duration(u.durationMs)}</span>;
 }
 
 /** How full the session's context is; the window size is only known once a run has finished. */
