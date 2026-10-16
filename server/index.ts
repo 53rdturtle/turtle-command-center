@@ -13,6 +13,7 @@ import { localOnly } from './guard.ts';
 import { boardVersion, startUpdate } from './selfUpdate.ts';
 import { pickFolder } from './pickFolder.ts';
 import { readImage, saveImage } from './images.ts';
+import { taskFile, taskImage } from './files.ts';
 import {
   accountsDto, addAccount, answerPermission, usageToday, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
   behind, cancelMerge, dismissMergeFailure, merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, sync, toDto, tryIt,
@@ -138,6 +139,12 @@ const taskId = (c: { req: { param: (k: string) => string } }) => Number(c.req.pa
 
 app.get('/api/tasks/:id/events', (c) => c.json(listEvents(taskId(c))));
 app.get('/api/tasks/:id/diff', async (c) => c.json(await diff(taskId(c))));
+app.get('/api/tasks/:id/file', (c) => c.json(taskFile(taskId(c), c.req.query('path') ?? '')));
+app.get('/api/tasks/:id/file/raw', (c) => {
+  const image = taskImage(taskId(c), c.req.query('path') ?? '');
+  // SVGs can carry scripts; the sandbox keeps them inert if the URL is opened directly.
+  return c.body(image.bytes, 200, { 'content-type': image.type, 'cache-control': 'no-cache', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
+});
 
 app.post('/api/tasks/:id/reply', async (c) => {
   const { text, model } = await c.req.json();

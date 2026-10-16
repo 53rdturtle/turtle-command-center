@@ -124,6 +124,12 @@ export interface TaskDiff { target: string; base: string; files: DiffFile[]; add
 
 export interface TaskTemplate { id: number; title: string; description: string }
 
+/** A file in the task's worktree (or the project folder once it's gone); images load from fileRawUrl. */
+export type TaskFile =
+  | { path: string; size: number; kind: 'image' | 'binary' }
+  | { path: string; size: number; kind: 'text'; text: string; truncated: boolean };
+export const fileRawUrl = (id: number, path: string) => `/api/tasks/${id}/file/raw?path=${encodeURIComponent(path)}`;
+
 export interface TaskEvent { id: number; task_id: number; ts: number; kind: string; text: string }
 
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -172,6 +178,7 @@ export const api = {
   deleteTemplate: (slug: string, id: number) => call<TaskTemplate[]>('DELETE', `/api/projects/${slug}/templates/${id}`),
   events: (id: number) => call<TaskEvent[]>('GET', `/api/tasks/${id}/events`),
   diff: (id: number) => call<TaskDiff>('GET', `/api/tasks/${id}/diff`),
+  file: (id: number, path: string) => call<TaskFile>('GET', `/api/tasks/${id}/file?path=${encodeURIComponent(path)}`),
   reply: (id: number, text: string, model?: string) => call('POST', `/api/tasks/${id}/reply`, { text, model }),
   approveSplit: (id: number, subtasks: Subtask[]) => call('POST', `/api/tasks/${id}/split/approve`, { subtasks }),
   stop: (id: number) => call('POST', `/api/tasks/${id}/stop`),
