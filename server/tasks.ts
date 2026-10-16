@@ -6,7 +6,7 @@ import { DATA_DIR, LIMIT_RETRY_MS } from './config.ts';
 import {
   addEvent, db, DB_PATH, getAccount, getMaxConcurrent, getPermission, getProject, getTask, lastEvent, listAccounts,
   listEvents, pendingPermissions, saveMaxConcurrent, setRunOffset, tasksWithStatus, updateTask,
-  type AccountRow, type Checkpoint, type EventRow, type MergeFailure, type ProjectRow, type SplitProposal, type TaskRow,
+  type AccountRow, type Checkpoint, type EventRow, type MergeFailure, type MergeState, type ProjectRow, type SplitProposal, type TaskRow,
 } from './db.ts';
 import { CliRunner, type AccountUsage, type AgentRunner, type RunRef, type RunResult } from './runner.ts';
 import { openResumeTerminal, openShellTerminal } from './openTerminal.ts';
@@ -501,7 +501,7 @@ export async function recoverOnStartup() {
     }
   }
   pump();
-  const queued = db.prepare(`SELECT DISTINCT project_id FROM tasks WHERE merge_state = 'queued'`).all() as { project_id: number }[];
+  const queued = db.prepare(`SELECT DISTINCT project_id FROM tasks WHERE merge_state IN ('queued', 'conflicted')`).all() as { project_id: number }[];
   for (const { project_id } of queued) pumpMerges(project_id);
 }
 
@@ -597,7 +597,7 @@ export function merge(taskId: number) {
 export function cancelMerge(taskId: number) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
-  if (task.merge_state !== 'queued') throw new Error('This task is not waiting in the merge queue');
+  if (task.merge_state !== 'queued' && task.merge_state !== 'conflicted') throw new Error('This task is not waiting in the merge queue');
   updateTask(taskId, { merge_state: null, merge_queued_at: null });
 }
 
@@ -609,6 +609,7 @@ export function dismissMergeFailure(taskId: number) {
 function leaveMergeQueue(task: TaskRow) {
   if (task.merge_state === 'merging') return; // already landing
   if (task.merge_state || task.merge_failure) updateTask(task.id, { merge_state: null, merge_queued_at: null, merge_failure: null });
+  if (task.merge_state === 'resolving') pumpMerges(task.project_id); // the next conflicted task's turn
 }
 
 /** 1-based place in line for queued tasks (the one merging now is 0); null when not waiting. */
@@ -619,9 +620,18 @@ function mergePosition(task: TaskRow) {
     .get(task.project_id, task.merge_queued_at) as { n: number }).n;
 }
 
+const firstWithMergeState = (projectId: number, state: MergeState) =>
+  db.prepare(`SELECT * FROM tasks WHERE project_id = ? AND merge_state = ? ORDER BY merge_queued_at, id LIMIT 1`)
+    .get(projectId, state) as TaskRow | undefined;
+
+/**
+ * The next task to try merging: the queue in order, then, once it's empty and no agent is resolving conflicts,
+ * the oldest task that conflicted. Resolving one at a time against a checkout nothing else is landing on
+ * keeps agents from chasing each other's merges.
+ */
 const nextInMergeQueue = (projectId: number) =>
-  db.prepare(`SELECT * FROM tasks WHERE project_id = ? AND merge_state = 'queued' ORDER BY merge_queued_at, id LIMIT 1`)
-    .get(projectId) as TaskRow | undefined;
+  firstWithMergeState(projectId, 'queued')
+  ?? (firstWithMergeState(projectId, 'resolving') ? undefined : firstWithMergeState(projectId, 'conflicted'));
 
 /** Merges the project's queued tasks in order, one at a time. */
 async function pumpMerges(projectId: number) {
@@ -676,6 +686,14 @@ async function attemptMerge(taskId: number) {
     failMerge(taskId, { target, reason, conflicts, files, message });
     return;
   }
+  // Wait while other merges can still land, another agent is resolving, or an older conflict is ahead in line;
+  // it's tried again (fresh) on its turn.
+  const older = firstWithMergeState(task.project_id, 'conflicted');
+  const olderFirst = older && (older.merge_queued_at! < task.merge_queued_at! || (older.merge_queued_at === task.merge_queued_at && older.id < task.id));
+  if (firstWithMergeState(task.project_id, 'queued') || firstWithMergeState(task.project_id, 'resolving') || olderFirst) {
+    updateTask(taskId, { merge_state: 'conflicted' });
+    return;
+  }
   updateTask(taskId, { merge_state: 'resolving', merge_attempts: task.merge_attempts + 1 });
   addEvent(taskId, 'user', `Merging into \`${result.target}\` conflicts in ${result.conflicts.join(', ')}; asked the agent to resolve them.`);
   enqueue(taskId, resolveConflictsPrompt(result.target, result.conflicts));
@@ -701,11 +719,10 @@ function continueMerge(taskId: number) {
   const cp = task.checkpoint ? (JSON.parse(task.checkpoint) as Checkpoint) : null;
   if (task.status !== 'needs_input' || !cp?.done) {
     updateTask(taskId, { merge_state: null, merge_queued_at: null });
-    return;
+  } else {
+    updateTask(taskId, { merge_state: 'queued' }); // it keeps its original place in line
   }
-  // It keeps its original place in line.
-  updateTask(taskId, { merge_state: 'queued' });
-  pumpMerges(task.project_id);
+  pumpMerges(task.project_id); // either way, the next conflicted task can take its turn
 }
 
 export async function mergeable(taskId: number) {

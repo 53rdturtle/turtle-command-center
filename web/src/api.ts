@@ -40,8 +40,8 @@ export interface Task {
   split: Split | null;
   queuedPrompt: string | null;
   error: string | null;
-  /** Place in the merge queue: waiting, merging now, or the agent is resolving conflicts first. */
-  mergeState: 'queued' | 'merging' | 'resolving' | null;
+  /** Place in the merge queue: waiting, merging now, conflicted and waiting its turn to resolve, or the agent is resolving conflicts first. */
+  mergeState: 'queued' | 'merging' | 'conflicted' | 'resolving' | null;
   /** 1-based place in line while queued, 0 while merging, otherwise null. */
   mergePosition: number | null;
   /** Why the last merge didn't land; cleared on dismiss or the next merge. */
