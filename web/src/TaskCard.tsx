@@ -3,7 +3,7 @@ import Markdown from 'react-markdown';
 import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
 import { ago, elapsed, useNow } from './time.ts';
 import { agentDone, api, MODELS, onStream, type Checkpoint, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
-import { duration, freshTokens, kTokens, usageBreakdown } from './usage.ts';
+import { duration, kTokens, usageBreakdown } from './usage.ts';
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   queued: 'Queued',
@@ -143,7 +143,6 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
             {showChanges ? '▾' : '▸'} <span className="add">+{diff.data.additions}</span> <span className="del">−{diff.data.deletions}</span> · {diff.data.files.length} file{diff.data.files.length === 1 ? '' : 's'}
           </button>
         )}
-        <ContextChip task={task} />
         <UsageChip task={task} />
       </div>
 
@@ -281,27 +280,23 @@ function MenuItem({ danger, ...props }: ButtonHTMLAttributes<HTMLButtonElement> 
   return <button role="menuitem" className={danger ? 'menu-item danger-text' : 'menu-item'} {...props} />;
 }
 
-/** What the task's finished runs consumed, so you can see which tasks eat your usage limits. */
+/** How full the session's context is and how long the agent has worked; token counts are in the tooltip. */
 function UsageChip({ task }: { task: Task }) {
   const u = task.usage;
-  if (!u.turns && !u.durationMs) return null;
+  const { contextTokens: used, contextWindow: size } = task;
+  const hasRuns = Boolean(u.turns || u.durationMs);
+  if (!used && !hasRuns) return null;
+  const pct = used && size ? Math.round((used / size) * 100) : null;
+  const context = used ? `Context ${pct ?? kTokens(used)}${pct === null ? '' : '%'}` : null;
   const title = [
-    'Used by this task so far (finished runs):',
-    ...usageBreakdown(u),
+    used && (size ? `Context: ${kTokens(used)} of ${kTokens(size)} tokens. The CLI compacts the conversation when it gets close to full.` : `Context: ${kTokens(used)} tokens`),
+    hasRuns && 'Used by this task so far (finished runs):',
+    ...(hasRuns ? usageBreakdown(u) : []),
     task.costUsd > 0 && `≈$${task.costUsd.toFixed(2)} API-equivalent (not billed on a subscription)`,
   ].filter(Boolean).join('\n');
-  return <span className="chip" title={title}>{kTokens(freshTokens(u))} tok · {duration(u.durationMs)}</span>;
-}
-
-/** How full the session's context is; the window size is only known once a run has finished. */
-function ContextChip({ task }: { task: Task }) {
-  const { contextTokens: used, contextWindow: size } = task;
-  if (!used) return null;
-  if (!size) return <span className="chip" title="Tokens in the session's context">Context {kTokens(used)}</span>;
-  const pct = Math.round((used / size) * 100);
   return (
-    <span className={`chip${pct >= 80 ? ' chip-warn' : ''}`} title={`${kTokens(used)} of ${kTokens(size)} tokens. The CLI compacts the conversation when it gets close to full.`}>
-      Context {pct}%
+    <span className={`chip${pct !== null && pct >= 80 ? ' chip-warn' : ''}`} title={title}>
+      {[context, hasRuns && duration(u.durationMs)].filter(Boolean).join(' · ')}
     </span>
   );
 }
