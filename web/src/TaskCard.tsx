@@ -189,8 +189,8 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
         ) : (
           <>
             <span className="spacer" />
+            <button className="ghost" onClick={() => setShowTranscript((s) => !s)}>{showTranscript ? 'Hide transcript' : 'Transcript'}</button>
             <Menu>
-              <MenuItem onClick={() => setShowTranscript((s) => !s)}>{showTranscript ? 'Hide transcript' : 'Transcript'}</MenuItem>
               {/* With a diff, the "+N −M" chip toggles changes; this covers running tasks and empty diffs. */}
               {hasWorktree && !hasDiff && (
                 <MenuItem onClick={() => setShowChanges((s) => !s)}>{showChanges ? 'Hide changes' : 'Changes'}</MenuItem>
