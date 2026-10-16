@@ -337,7 +337,8 @@ function Body({ task, children, boardAction }: { task: Task; children: Task[]; b
         </div>
       );
     case 'done':
-      return task.checkpoint ? <Summary checkpoint={task.checkpoint} /> : null;
+      // Replying reopens the task in the same session.
+      return task.checkpoint ? <QuickReply task={task} boardAction={boardAction} /> : <ReplyBox task={task} placeholder="Reply to reopen…" />;
   }
 }
 
@@ -373,16 +374,18 @@ function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActio
   const options = cp.options
     .map((o) => ({ ...o, onClick: o.action ? boardAction(o.action) : () => run(() => api.reply(task.id, o.label, model)) }))
     .filter((o) => o.onClick);
+  const closed = task.status === 'done';
+  const finished = cp.done || closed;
   return (
     <div>
-      {cp.done && <p className="done-banner">✓ The agent says this task is done.</p>}
+      {cp.done && !closed && <p className="done-banner">✓ The agent says this task is done.</p>}
       <Summary checkpoint={cp} />
       {/* On a finished task the options are extra work the agent could do, so none is highlighted. */}
-      {options.length > 0 && cp.done && <p className="options-label">Optional follow-ups (nothing more is needed):</p>}
+      {options.length > 0 && finished && <p className="options-label">{closed ? 'Follow-ups (reopens the task):' : 'Optional follow-ups (nothing more is needed):'}</p>}
       {options.length > 0 && (
-        <div className={cp.done ? 'options follow-ups' : 'options'} data-hotkeys>
+        <div className={finished ? 'options follow-ups' : 'options'} data-hotkeys>
           {options.map((o, i) => (
-            <button key={i} className={i === 0 && !cp.done ? 'option primary' : 'option'} disabled={busy} onClick={o.onClick!}>
+            <button key={i} className={i === 0 && !finished ? 'option primary' : 'option'} disabled={busy} onClick={o.onClick!}>
               <span>{i < 4 && <kbd className="hotkey">{i + 1}</kbd>}{o.label}</span>
               {o.detail && <small>{o.detail}</small>}
             </button>
@@ -390,7 +393,7 @@ function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActio
         </div>
       )}
       {error && <p className="error">{error}</p>}
-      <ReplyBox task={task} model={model} setModel={setModel} />
+      <ReplyBox task={task} model={model} setModel={setModel} placeholder={closed ? 'Reply to reopen…' : undefined} />
     </div>
   );
 }

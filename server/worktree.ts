@@ -41,11 +41,21 @@ export async function createWorktree(repo: string, projectSlug: string, taskId: 
   if (!(await isGitRepoWithCommits(repo))) return { path: repo, branch: null };
   const name = `${taskId}-${slugify(title)}`;
   const branch = `tcc/${name}`;
-  const dir = join(DATA_DIR, 'worktrees', projectSlug);
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, name);
+  const path = worktreePath(projectSlug, name);
   await git(repo, 'worktree', 'add', '-b', branch, path, baseRef);
   return { path, branch };
+}
+
+/** Checks a kept branch (e.g. of a task marked done) back out at the path it was created at, so its session resumes. */
+export async function reopenWorktree(repo: string, projectSlug: string, branch: string) {
+  const path = worktreePath(projectSlug, branch.replace(/^tcc\//, ''));
+  return (await restoreWorktree(repo, path, branch)) ? path : null;
+}
+
+function worktreePath(projectSlug: string, name: string) {
+  const dir = join(DATA_DIR, 'worktrees', projectSlug);
+  mkdirSync(dir, { recursive: true });
+  return join(dir, name);
 }
 
 /** Removes links (symlinks, junctions) in a worktree without following them; skips .git and node_modules contents. */
