@@ -3,7 +3,7 @@ import { agentDone, api, MODELS, needsAttention, onStream, PERMISSION_MODES, typ
 import { CardErrorBoundary, enterToSubmit, isTyping, TaskCard } from './TaskCard.tsx';
 import { ImageThumbs, useImageInput } from './images.tsx';
 import { ago } from './time.ts';
-import { duration, kTokens, totalTokens, usageBreakdown } from './usage.ts';
+import { duration, freshTokens, kTokens, usageBreakdown } from './usage.ts';
 
 const slugFromPath = () => decodeURIComponent(location.pathname.match(/^\/p\/([^/]+)/)?.[1] ?? '');
 
@@ -692,7 +692,7 @@ function TodayUsage({ slug }: { slug: string }) {
   const u = today?.[slug];
   if (!u) return null;
   const title = [`This project today (${u.runs} finished run${u.runs === 1 ? '' : 's'}):`, ...usageBreakdown(u)].join('\n');
-  return <span className="slots" title={title}>Today {kTokens(totalTokens(u))} tok · {duration(u.durationMs)}</span>;
+  return <span className="slots" title={title}>Today {kTokens(freshTokens(u))} tok · {duration(u.durationMs)}</span>;
 }
 
 /** One pill per account: how much of its usage is left, and which one new runs start on. */

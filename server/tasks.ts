@@ -106,6 +106,13 @@ function denyPending(taskId: number, message: string) {
 
 // ---------- DTO ----------
 
+/** The CLI only reports the window size when a run finishes; until then, borrow it from another task on the same model. */
+function lastContextWindow(model: string): number | null {
+  const row = db.prepare(`SELECT context_window FROM tasks WHERE model = ? AND context_window IS NOT NULL ORDER BY updated_at DESC LIMIT 1`)
+    .get(model) as { context_window: number } | undefined;
+  return row?.context_window ?? null;
+}
+
 export function toDto(t: TaskRow) {
   const project = getProject(t.project_id);
   return {
@@ -136,7 +143,7 @@ export function toDto(t: TaskRow) {
       turns: t.turns, durationMs: t.duration_ms,
     },
     contextTokens: t.context_tokens,
-    contextWindow: t.context_window,
+    contextWindow: t.context_window ?? lastContextWindow(t.model),
     lastActivity: t.status === 'running' ? (lastEvent(t.id)?.text ?? null) : null,
     subtasks: subtaskCounts(t.id),
     permissions: pendingPermissions(t.id).map((p) => {
