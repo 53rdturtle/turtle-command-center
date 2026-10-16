@@ -155,6 +155,7 @@ export const api = {
   addProject: (p: { name: string; path: string; defaultModel: string; permissionMode: string }) =>
     call<Project>('POST', '/api/projects', p),
   updateProject: (slug: string, p: Partial<Project>) => call<Project>('PATCH', `/api/projects/${slug}`, p),
+  tryProject: (slug: string) => call<TryEnv>('POST', `/api/projects/${slug}/try`),
   accounts: () => call<Account[]>('GET', '/api/accounts'),
   addAccount: (a: { name: string; token: string }) => call<Account[]>('POST', '/api/accounts', a),
   removeAccount: (id: number) => call<Account[]>('DELETE', `/api/accounts/${id}`),

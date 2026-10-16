@@ -52,6 +52,7 @@ export function App() {
               {projects.map((p) => <option key={p.slug} value={p.slug}>{p.name}</option>)}
             </select>
           )}
+          {project && <TryProject key={project.slug} project={project} onSettings={() => setShowSettings(true)} />}
           <button className="ghost" onClick={() => setShowAddProject(true)}>+ Project</button>
           <button className="ghost toggle" aria-pressed={showSettings} onClick={() => setShowSettings((s) => !s)}>Settings</button>
         </div>
@@ -553,8 +554,13 @@ function ProjectSettings({ project, onSaved }: { project: Project; onSaved: () =
           onBlur={(e) => e.target.value.trim() !== project.tryCommand && save({ tryCommand: e.target.value })}
           onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
         />
+        {!project.tryCommand && project.suggestedTryCommand && (
+          <button type="button" className="ghost small use-suggestion" onClick={() => save({ tryCommand: project.suggestedTryCommand })}>
+            Use <code>{project.suggestedTryCommand}</code>
+          </button>
+        )}
         <span>
-          “Try it” on a task opens a terminal in its worktree and runs this. It gets free ports in <code>TCC_PORT</code> and{' '}
+          “Try it” on a task opens a terminal in its worktree and runs this; “Try it” in the header runs it in the main checkout. It gets free ports in <code>TCC_PORT</code> and{' '}
           <code>TCC_DEV_PORT</code> and a sandbox <code>TCC_DATA_DIR</code>, so a copy of this board runs beside the real one with its own empty database.
         </span>
       </label>
@@ -806,6 +812,38 @@ function BoardUpdate() {
       )}
       {phase !== 'updating' && busyMerges > 0 && <span className="warn-text">merging</span>}
       {phase === 'failed' && <span className="error" title={error ?? ''}>Update failed; still on {version.current}.</span>}
+    </span>
+  );
+}
+
+/** Runs the project's Try command in its main checkout, i.e. what has been merged so far. */
+function TryProject({ project, onSettings }: { project: Project; onSettings: () => void }) {
+  const [state, setState] = useState<'idle' | 'busy' | 'opened'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (state !== 'opened') return;
+    const timer = setTimeout(() => setState('idle'), 3000);
+    return () => clearTimeout(timer);
+  }, [state]);
+  const tryIt = () => {
+    setError(null);
+    setState('busy');
+    api.tryProject(project.slug).then(() => setState('opened'), (e) => (setError((e as Error).message), setState('idle')));
+  };
+  const command = project.tryCommand;
+  return (
+    <span className="board-update">
+      <button
+        className="ghost"
+        disabled={state === 'busy'}
+        onClick={command ? tryIt : onSettings}
+        title={command
+          ? `Run "${command}" in ${project.path} (the main checkout, with everything merged so far)`
+          : 'Set a Try command in project settings first'}
+      >
+        {state === 'opened' ? 'Opened ✓' : '▶ Try it'}
+      </button>
+      {error && <span className="error" title={error}>Try failed</span>}
     </span>
   );
 }

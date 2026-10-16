@@ -852,12 +852,24 @@ export async function tryIt(taskId: number) {
   if (!task) throw new Error('Task not found');
   if (!task.worktree || !existsSync(task.worktree)) throw new Error('This task has no worktree to try');
   const project = getProject(task.project_id)!;
+  return openTry(task.worktree, `Try #${taskId} ${task.title}`, project.try_command, tryDataDir(taskId));
+}
+
+/** Like `tryIt`, but in the project's main checkout: tries what has been merged so far, no task needed. */
+export async function tryProject(projectId: number) {
+  const project = getProject(projectId);
+  if (!project) throw new Error('Project not found');
+  if (!existsSync(project.path)) throw new Error(`Project folder not found: ${project.path}`);
+  return openTry(project.path, `Try ${project.name}`, project.try_command, join(DATA_DIR, 'try', `project-${project.id}`));
+}
+
+async function openTry(cwd: string, title: string, command: string | null, dataDir: string) {
   const env = {
     TCC_PORT: String(await freePort()),
     TCC_DEV_PORT: String(await freePort()),
-    TCC_DATA_DIR: tryDataDir(taskId),
+    TCC_DATA_DIR: dataDir,
   };
-  await openShellTerminal(task.worktree, `Try #${taskId} ${task.title}`, project.try_command?.trim() || null, env);
+  await openShellTerminal(cwd, title, command?.trim() || null, env);
   return env;
 }
 
