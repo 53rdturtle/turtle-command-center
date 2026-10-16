@@ -79,7 +79,7 @@ only share the SQLite database and log files.
   (Edge when Chrome isn't installed). The browser uses a throwaway profile, so it never touches yours.
 - **Mark done** commits leftover changes and removes the worktree but keeps the `tcc/...` branch.
   **Discard** deletes the worktree and the branch.
-- **Accounts** (header button): agents run on the first account with usage left. When it hits its usage limit, its tasks
+- **Accounts** (in Settings, along with desktop notifications): agents run on the first account with usage left. When it hits its usage limit, its tasks
   resume the same session on the next account; only when every account is limited do tasks park until the earliest
   reset (or 30 minutes if the limit message doesn't say). The default account is whatever `claude` is logged in to; add
   more with a token from `claude setup-token` (run it and sign in with that account). Each run gets its account's token

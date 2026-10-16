@@ -11,9 +11,8 @@ export function App() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [slug, setSlug] = useState(slugFromPath);
   const [showAddProject, setShowAddProject] = useState(false);
-  const [drawer, setDrawer] = useState<'settings' | 'accounts' | null>(null);
-  const toggleDrawer = (which: 'settings' | 'accounts') => setDrawer((d) => (d === which ? null : which));
-  const closeDrawer = useCallback(() => setDrawer(null), []);
+  const [showSettings, setShowSettings] = useState(false);
+  const closeSettings = useCallback(() => setShowSettings(false), []);
 
   const reloadProjects = useCallback(() => api.projects().then(setProjects), []);
   useEffect(() => {
@@ -26,7 +25,6 @@ export function App() {
   const navigate = (next: string) => {
     history.pushState(null, '', `/p/${next}`);
     setSlug(next);
-    setDrawer((d) => (d === 'settings' ? null : d));
   };
   useEffect(() => {
     const onPop = () => setSlug(slugFromPath());
@@ -55,17 +53,13 @@ export function App() {
             </select>
           )}
           <button className="ghost" onClick={() => setShowAddProject(true)}>+ Project</button>
-          {project && (
-            <button className="ghost toggle" aria-pressed={drawer === 'settings'} onClick={() => toggleDrawer('settings')}>Settings</button>
-          )}
-          <button className="ghost toggle" aria-pressed={drawer === 'accounts'} onClick={() => toggleDrawer('accounts')}>Accounts</button>
+          <button className="ghost toggle" aria-pressed={showSettings} onClick={() => setShowSettings((s) => !s)}>Settings</button>
         </div>
         <div className="topbar-status">
           <BoardUpdate />
           {project && <TodayUsage slug={project.slug} />}
           <UsagePills />
           <AgentSlots />
-          <NotifyToggle />
         </div>
       </header>
 
@@ -87,8 +81,7 @@ export function App() {
         </div>
       )}
 
-      {drawer === 'accounts' && <Accounts onClose={closeDrawer} />}
-      {project && drawer === 'settings' && <ProjectSettings project={project} onSaved={reloadProjects} onClose={closeDrawer} />}
+      {showSettings && <Settings project={project} onSaved={reloadProjects} onClose={closeSettings} />}
       {project && <Board key={project.slug} project={project} />}
     </div>
   );
@@ -522,10 +515,22 @@ function Drawer({ title, onClose, children }: { title: string; onClose: () => vo
   );
 }
 
-function ProjectSettings({ project, onSaved, onClose }: { project: Project; onSaved: () => void; onClose: () => void }) {
+/** Everything configurable in one drawer: the current project, desktop notifications and accounts. */
+function Settings({ project, onSaved, onClose }: { project?: Project; onSaved: () => void; onClose: () => void }) {
+  return (
+    <Drawer title="Settings" onClose={onClose}>
+      {project && <ProjectSettings key={project.slug} project={project} onSaved={onSaved} />}
+      <NotifySettings />
+      <Accounts />
+    </Drawer>
+  );
+}
+
+function ProjectSettings({ project, onSaved }: { project: Project; onSaved: () => void }) {
   const save = (patch: Partial<Project>) => api.updateProject(project.slug, patch).then(onSaved);
   return (
-    <Drawer title={`${project.name} settings`} onClose={onClose}>
+    <section className="settings-section">
+      <h3>Project: {project.name}</h3>
       <p className="muted mono">{project.path}{project.remote && <> · {project.remote}</>}</p>
       <div className="row">
         <label>Default model
@@ -553,7 +558,7 @@ function ProjectSettings({ project, onSaved, onClose }: { project: Project; onSa
           <code>TCC_DEV_PORT</code> and a sandbox <code>TCC_DATA_DIR</code>, so a copy of this board runs beside the real one with its own empty database.
         </span>
       </label>
-      <h3>Always allowed</h3>
+      <h4>Always allowed</h4>
       {project.alwaysAllow.length === 0 ? (
         <p className="muted">Nothing yet. Use “Always allow” on a permission request to add rules.</p>
       ) : (
@@ -566,14 +571,14 @@ function ProjectSettings({ project, onSaved, onClose }: { project: Project; onSa
           ))}
         </ul>
       )}
-    </Drawer>
+    </section>
   );
 }
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 /** Claude subscriptions to run agents on. When one hits its usage limit, tasks continue on the next. */
-function Accounts({ onClose }: { onClose: () => void }) {
+function Accounts() {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [form, setForm] = useState({ name: '', token: '' });
   const [error, setError] = useState<string | null>(null);
@@ -595,7 +600,8 @@ function Accounts({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Drawer title="Accounts" onClose={onClose}>
+    <section className="settings-section">
+      <h3>Accounts</h3>
       <p className="muted">
         Agents run on the first account below that has usage left. When it hits its limit, its tasks resume the same
         session on the next one.
@@ -636,7 +642,7 @@ function Accounts({ onClose }: { onClose: () => void }) {
         this machine's command-center database only.
       </p>
       {error && <p className="error">{error}</p>}
-    </Drawer>
+    </section>
   );
 }
 
@@ -833,10 +839,9 @@ function AgentSlots() {
 const notifySupported = typeof Notification !== 'undefined';
 const notifyWanted = () => localStorage.getItem('tcc.notify') === '1';
 
-function NotifyToggle() {
+function NotifySettings() {
   const [perm, setPerm] = useState(notifySupported ? Notification.permission : 'denied');
   const [wanted, setWanted] = useState(notifyWanted);
-  if (!notifySupported) return null;
   const on = wanted && perm === 'granted';
   const toggle = async () => {
     const next = !on && perm === 'default' ? await Notification.requestPermission() : perm;
@@ -845,13 +850,18 @@ function NotifyToggle() {
     localStorage.setItem('tcc.notify', keep ? '1' : '0');
     setWanted(keep);
   };
-  const title = perm === 'denied' ? 'Notifications are blocked for this site. Allow them in the site settings of your browser.'
-    : on ? 'Desktop notifications on: you get one when a task needs you and this tab is in the background. Click to turn off.'
-    : 'Turn on desktop notifications for tasks that need you';
   return (
-    <button className={`ghost bell${on ? ' on' : ''}`} onClick={toggle} disabled={perm === 'denied'} title={title} aria-pressed={on} aria-label="Desktop notifications">
-      {on ? '🔔' : '🔕'}
-    </button>
+    <section className="settings-section">
+      <h3>Notifications</h3>
+      <label className="check">
+        <input type="checkbox" checked={on} onChange={toggle} disabled={!notifySupported || perm === 'denied'} />
+        Desktop notification when a task needs you and this tab is in the background
+      </label>
+      {!notifySupported && <p className="muted">This browser doesn't support desktop notifications.</p>}
+      {notifySupported && perm === 'denied' && (
+        <p className="muted">Notifications are blocked for this site. Allow them in your browser's site settings, then reopen Settings.</p>
+      )}
+    </section>
   );
 }
 
