@@ -15,7 +15,7 @@ import { pickFolder } from './pickFolder.ts';
 import { readImage, saveImage } from './images.ts';
 import {
   accountsDto, addAccount, answerPermission, usageToday, approveSplit, clearAccountLimit, createTask, removeAccount, diff, discard, markDone, recoverOnStartup,
-  cancelMerge, dismissMergeFailure, merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, toDto, tryIt,
+  behind, cancelMerge, dismissMergeFailure, merge, mergeable, openInTerminal, reply, retry, runningCount, setMaxConcurrent, stop, subscribe, sync, toDto, tryIt,
 } from './tasks.ts';
 import { currentBranch, getRemote, slugify } from './worktree.ts';
 
@@ -158,7 +158,11 @@ app.post('/api/tasks/:id/done', async (c) => (await markDone(taskId(c)), c.json(
 app.post('/api/tasks/:id/discard', async (c) => (await discard(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/open-terminal', async (c) => (await openInTerminal(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/try', async (c) => c.json(await tryIt(taskId(c))));
-app.get('/api/tasks/:id/mergeable', async (c) => c.json({ mergeable: await mergeable(taskId(c)) }));
+app.get('/api/tasks/:id/mergeable', async (c) => {
+  const [m, b] = await Promise.all([mergeable(taskId(c)), behind(taskId(c))]);
+  return c.json({ mergeable: m, behind: b });
+});
+app.post('/api/tasks/:id/sync', async (c) => c.json(await sync(taskId(c))));
 app.post('/api/tasks/:id/merge', (c) => c.json(merge(taskId(c))));
 app.post('/api/tasks/:id/merge/cancel', (c) => (cancelMerge(taskId(c)), c.json({ ok: true })));
 app.post('/api/tasks/:id/merge/dismiss', (c) => (dismissMergeFailure(taskId(c)), c.json({ ok: true })));
