@@ -13,7 +13,7 @@ import { openResumeTerminal, openShellTerminal } from './openTerminal.ts';
 import { findBrowser } from './browser.ts';
 import { cleanupTaskImages, sweepImages } from './images.ts';
 import {
-  createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, restoreWorktree, saveAndRemoveWorktree, taskDiff,
+  createWorktree, currentBranch, discardWorktree, hasWorkToMerge, mergeTaskBranch, reopenWorktree, restoreWorktree, saveAndRemoveWorktree, taskDiff,
   wasMerged,
 } from './worktree.ts';
 
@@ -309,7 +309,13 @@ function pump() {
 
 async function start(task: TaskRow, account: AccountRow) {
   const project = getProject(task.project_id)!;
-  if (!task.worktree) {
+  if (!task.worktree && task.branch) {
+    // Reopened after Mark done: the branch was kept but its worktree removed.
+    const path = await reopenWorktree(project.path, project.slug, task.branch);
+    if (!path) throw new Error(`This task's branch (${task.branch}) is gone, so its session can't continue here.`);
+    updateTask(task.id, { worktree: path });
+  } else if (!task.worktree) {
+    // New, or reopened after a merge deleted its branch: branch off the current code.
     const parent = task.parent_id ? getTask(task.parent_id) : undefined;
     const wt = await createWorktree(project.path, project.slug, task.id, task.title, parent?.branch ?? 'HEAD');
     updateTask(task.id, { worktree: wt.path, branch: wt.branch });
@@ -525,11 +531,12 @@ export function reply(taskId: number, text: string, model?: string) {
   const task = getTask(taskId);
   if (!task) throw new Error('Task not found');
   if (task.status === 'running') throw new Error('Task is running; wait for its checkpoint or stop it first');
+  if (task.status === 'discarded') throw new Error('This task was discarded');
   if (task.merge_state === 'merging') throw new Error('This task is being merged right now');
   if (model !== undefined && !MODELS.includes(model)) throw new Error(`Unknown model: ${model}`);
   if (model && model !== task.model) updateTask(taskId, { model });
   leaveMergeQueue(task); // the work is about to change; merge again once the agent reports back
-  enqueue(taskId, text);
+  enqueue(taskId, text); // a done task reopens here: start() brings back its worktree and resumes the session
 }
 
 export function approveSplit(taskId: number, subtasks: { title: string; prompt: string }[]) {
