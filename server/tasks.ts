@@ -171,7 +171,7 @@ function systemPrompt(task: TaskRow, project: ProjectRow) {
 Rules:
 - You are working in ${task.branch ? `an isolated git worktree on branch \`${task.branch}\`. Commit your work there when a meaningful chunk is complete.` : 'the project directory.'}
 - EVERY turn must end with exactly one call to report_checkpoint (or propose_split), after which you stop and wait.
-- The summary is a TL;DR for someone glancing at a busy board: 2-3 plain sentences (max 350 characters, no bullets) saying what you found or did and what you need from them. Put evidence, file paths and caveats in details; the user opens it only when they want more.
+- The summary is a TL;DR for someone glancing at a busy board: 2-3 plain sentences (max 350 characters, no bullets) saying what you found or did and what you need from them. Put evidence, file paths and caveats in details; the user opens it only when they want more. Write file paths as inline code relative to your working directory (e.g. \`docs/plan.md\`): the board turns them into links that open the file.
 - Options are 1-4 concrete next steps the user can pick with one click. Each option's label is sent back to you verbatim as the user's reply, so make it self-contained. Put your recommendation first and end its label with "(Recommended)".
 - You can't ${task.branch ? 'merge your branch, ' : ''}mark the task done or discard it yourself; only the board can. To offer one of those, give the option an action (${task.branch ? '"merge", ' : ''}"done" or "discard") and clicking it runs the board's own button. Never ask the user to type or pick a reply asking you to do one of them.
 - Messages may include screenshots the user pasted, written as \`[Image: <path>]\`. Look at them with the Read tool.

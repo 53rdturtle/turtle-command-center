@@ -1,7 +1,7 @@
 import { Component, useEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
-import Markdown from 'react-markdown';
 import { AttachImage, ImageThumbs, useImageInput, withImages } from './images.tsx';
 import { ago, elapsed, useNow } from './time.ts';
+import { TaskMarkdown } from './files.tsx';
 import { agentDone, api, MODELS, onStream, type Checkpoint, type SyncResult, type DiffFile, type MergeFailure, type Option, type Permission, type Subtask, type Task, type TaskDiff, type TaskEvent, type TryEnv } from './api.ts';
 import { duration, kTokens, usageBreakdown } from './usage.ts';
 
@@ -375,15 +375,15 @@ function subtaskProgress(task: Task) {
 }
 
 /** The TL;DR, with the agent's supporting details one click away. */
-function Summary({ checkpoint }: { checkpoint: Checkpoint }) {
+function Summary({ taskId, checkpoint }: { taskId: number; checkpoint: Checkpoint }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="summary">
-      <div className="md"><Markdown>{checkpoint.summary}</Markdown></div>
+      <div className="md"><TaskMarkdown taskId={taskId}>{checkpoint.summary}</TaskMarkdown></div>
       {checkpoint.details && (
         <>
           <button className="link" onClick={() => setOpen((o) => !o)}>{open ? 'Less' : 'More'}</button>
-          {open && <div className="details md"><Markdown>{checkpoint.details}</Markdown></div>}
+          {open && <div className="details md"><TaskMarkdown taskId={taskId}>{checkpoint.details}</TaskMarkdown></div>}
         </>
       )}
     </div>
@@ -403,7 +403,7 @@ function QuickReply({ task, boardAction }: { task: Task; boardAction: BoardActio
   return (
     <div>
       {cp.done && !closed && <p className="done-banner">✓ The agent says this task is done.</p>}
-      <Summary checkpoint={cp} />
+      <Summary taskId={task.id} checkpoint={cp} />
       {/* On a finished task the options are extra work the agent could do, so none is highlighted. */}
       {options.length > 0 && finished && <p className="options-label">{closed ? 'Follow-ups (reopens the task):' : 'Optional follow-ups (nothing more is needed):'}</p>}
       {options.length > 0 && (
@@ -499,7 +499,7 @@ Note from the user: ${trimmedNote}` : prompt);
 
   return (
     <div>
-      <div className="summary md"><Markdown>{task.split!.rationale}</Markdown></div>
+      <div className="summary md"><TaskMarkdown taskId={task.id}>{task.split!.rationale}</TaskMarkdown></div>
       <ul className="subtasks">
         {subtasks.map((s, i) => (
           <li key={i} className={s.picked ? '' : 'unpicked'}>
@@ -658,7 +658,7 @@ function Transcript({ taskId }: { taskId: number }) {
       {events.map((e) => (
         <div key={e.id} className={`ev ev-${e.kind}`}>
           <span className="ev-kind">{e.kind}</span>
-          {e.kind === 'tool' ? <code>{e.text}</code> : <div className="md"><Markdown>{withImages(e.text)}</Markdown></div>}
+          {e.kind === 'tool' ? <code>{e.text}</code> : <div className="md"><TaskMarkdown taskId={taskId}>{withImages(e.text)}</TaskMarkdown></div>}
         </div>
       ))}
     </div>
