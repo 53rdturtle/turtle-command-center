@@ -20,6 +20,7 @@ const STATUS_LABEL: Record<Task['status'], string> = {
 const MERGE_LABEL: Record<NonNullable<Task['mergeState']>, string> = {
   queued: 'Merge queued',
   merging: 'Merging',
+  conflicted: 'Conflicts',
   resolving: 'Resolving conflicts',
 };
 
@@ -110,7 +111,7 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
   // One primary action per card; everything else sits in the "⋯" menu.
   const primary: { label: string; run: () => Promise<unknown>; title?: string; quiet?: boolean } | null =
     active ? { label: 'Stop', run: () => api.stop(task.id), quiet: true }
-    : task.mergeState === 'queued' ? { label: 'Remove from merge queue', run: () => api.cancelMerge(task.id), quiet: true }
+    : task.mergeState === 'queued' || task.mergeState === 'conflicted' ? { label: 'Remove from merge queue', run: () => api.cancelMerge(task.id), quiet: true }
     : task.mergeState === 'merging' ? null
     : task.status === 'failed' || task.status === 'limited' ? { label: 'Retry now', run: () => api.retry(task.id) }
     : canMerge ? { label: `Merge into ${targetBranch ?? 'current branch'}`, run: merge, title: `Merge ${task.branch} into the branch checked out in your repo`, quiet: !task.checkpoint?.done }
@@ -156,7 +157,12 @@ export function TaskCard({ task, parent, children, targetBranch, defaultModel, t
         {task.mergeState === 'merging' && <p className="merging-banner">Merging into {target}…</p>}
         {task.mergeState === 'resolving' && (
           <p className="merging-banner">
-            Merging into {target}: the agent is resolving conflicts with it first. It rejoins the merge queue once it's done.
+            Conflicts with {target}, so the agent is fixing them on its own branch (nothing is merged yet). It rejoins the merge queue once it's done.
+          </p>
+        )}
+        {task.mergeState === 'conflicted' && (
+          <p className="merging-banner">
+            Conflicts with {target}. Its agent fixes them once the merges ahead of it land; one task fixes conflicts at a time.
           </p>
         )}
         {task.permissions.map((p) => <PermissionRequest key={p.id} p={p} />)}

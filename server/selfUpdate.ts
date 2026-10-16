@@ -33,7 +33,7 @@ export async function boardVersion() {
   const latest = await git(main, 'rev-parse', 'HEAD');
   const counts = db.prepare(`SELECT
       COUNT(*) FILTER (WHERE merge_state = 'merging') AS merging,
-      COUNT(*) FILTER (WHERE merge_state = 'queued') AS queued
+      COUNT(*) FILTER (WHERE merge_state IN ('queued', 'conflicted')) AS queued
     FROM tasks`).get() as { merging: number; queued: number };
   return {
     ...base,

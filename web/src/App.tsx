@@ -261,7 +261,7 @@ const FILTERS: { key: Filter; label: string }[] = [
 /** Sorts tasks into the board's sections. */
 function group(all: Task[]) {
   const byUpdate = (a: Task, b: Task) => a.updatedAt - b.updatedAt;
-  // Merging now, then the queue in order, then tasks whose agent is resolving conflicts before rejoining it.
+  // Merging now, then the queue in order, then conflicted tasks: waiting to resolve or resolving before rejoining it.
   const mergeOrder = (t: Task) => t.mergePosition ?? Infinity;
   return {
     attention: all.filter(needsAttention).sort(byUpdate),

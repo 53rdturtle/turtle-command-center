@@ -109,7 +109,7 @@ for (const [name, type] of [
   ['run_ref', 'TEXT'], // the live agent process (JSON from AgentRunner.start)
   ['run_offset', 'INTEGER NOT NULL DEFAULT 0'], // bytes of the run's output log already processed
   ['run_prompt', 'TEXT'], // prompt of the current run, for retrying after a usage limit
-  ['merge_state', 'TEXT'], // place in the merge queue: 'queued', 'merging', or 'resolving' while the agent resolves conflicts
+  ['merge_state', 'TEXT'], // place in the merge queue: 'queued', 'merging', 'conflicted' (waiting its turn to resolve), or 'resolving' while the agent resolves conflicts
   ['merge_attempts', 'INTEGER NOT NULL DEFAULT 0'], // automatic conflict-resolution rounds for the current merge
   ['account_id', 'INTEGER'], // account of the current (or last) run
   ['merge_queued_at', 'INTEGER'], // when Merge was clicked; the merge queue goes in this order
@@ -174,7 +174,7 @@ export interface TaskRow {
   input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number;
   turns: number; duration_ms: number;
 }
-export type MergeState = 'queued' | 'merging' | 'resolving';
+export type MergeState = 'queued' | 'merging' | 'conflicted' | 'resolving';
 export type MergeFailureReason = 'dirty' | 'detached' | 'in_progress' | 'conflicts' | 'error';
 /** `reason` and `files` are missing on failures stored before they existed. */
 export interface MergeFailure { target: string; reason?: MergeFailureReason; conflicts: string[]; files?: string[]; message: string }
